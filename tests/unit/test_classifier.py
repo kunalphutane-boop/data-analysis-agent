@@ -30,6 +30,35 @@ class _FakeClient:
         return text, 100, 20
 
 
+class _FlakyClient:
+    """Raises `exc` for the first `fail_times` calls, then returns `good` (or ""). Lets us
+    exercise the transient-retry helper deterministically without touching the network."""
+
+    def __init__(self, exc: Exception, fail_times: int, good: str = ""):
+        self._exc = exc
+        self._fail_times = fail_times
+        self._good = good
+        self.calls = 0
+
+    def call_with_usage(self, prompt, *, system=None):
+        self.calls += 1
+        if self.calls <= self._fail_times:
+            raise self._exc
+        return self._good, 100, 20
+
+
+class _AlwaysRaise:
+    """Raises `exc` on every call — simulates a provider that never recovers."""
+
+    def __init__(self, exc: Exception):
+        self._exc = exc
+        self.calls = 0
+
+    def call_with_usage(self, prompt, *, system=None):
+        self.calls += 1
+        raise self._exc
+
+
 # --- pure helpers -------------------------------------------------------------
 
 def test_is_blank():
@@ -193,6 +222,143 @@ def test_classify_batch_recovers_on_retry():
     result, _, _ = classifier.classify_batch(client, tax, [(0, "timings?")])
     assert result[0] == ("Branch/Timing", "Positive")
     assert client.calls == 2
+
+
+# --- transient-error retry + fallback (the reliability fix) --------------------
+
+@pytest.fixture
+def _no_sleep(monkeypatch):
+    """Neutralise backoff sleeps so retry tests run instantly."""
+    monkeypatch.setattr(classifier.time, "sleep", lambda *_a, **_k: None)
+
+
+def test_is_transient_error_classification():
+    assert classifier._is_transient_error(
+        RuntimeError("503 UNAVAILABLE The model is experiencing high demand")
+    )
+    assert classifier._is_transient_error(RuntimeError("429 RESOURCE_EXHAUSTED"))
+    assert classifier._is_transient_error(TimeoutError("deadline exceeded"))
+    assert classifier._is_transient_error(ConnectionError("connection reset"))
+    # Non-transient: auth / permission / bad request are surfaced, not retried.
+    assert not classifier._is_transient_error(
+        RuntimeError("401 UNAUTHENTICATED: API key not valid")
+    )
+    assert not classifier._is_transient_error(
+        RuntimeError("403 PERMISSION_DENIED")
+    )
+    assert not classifier._is_transient_error(ValueError("invalid argument"))
+
+
+def test_call_with_retry_retries_transient_then_succeeds(_no_sleep):
+    exc = RuntimeError("503 UNAVAILABLE high demand, please try again later")
+    client = _FlakyClient(exc, fail_times=2, good="ok")
+    text, it, ot = classifier._call_with_retry(
+        client, "u", system=None, label="unit"
+    )
+    assert text == "ok"
+    assert client.calls == 3  # two transient failures, then success
+
+
+def test_call_with_retry_does_not_retry_non_transient(_no_sleep):
+    exc = RuntimeError("401 UNAUTHENTICATED: API key not valid")
+    client = _AlwaysRaise(exc)
+    with pytest.raises(RuntimeError):
+        classifier._call_with_retry(client, "u", system=None, label="unit")
+    assert client.calls == 1  # surfaced immediately, no retry
+
+
+def test_classify_batch_retries_transient_then_succeeds(_no_sleep):
+    tax = list(classifier.BASE_TAXONOMY)
+    good = json.dumps([{"call_index": 0, "intent": "EMI/Payment", "outcome": "Negative"}])
+    exc = RuntimeError("503 UNAVAILABLE The model is currently experiencing high demand")
+    client = _FlakyClient(exc, fail_times=3, good=good)
+    result, it, ot = classifier.classify_batch(client, tax, [(0, "emi failed")])
+    assert result[0] == ("EMI/Payment", "Negative")
+    assert client.calls == 4  # three transient 503s then a good response
+    assert it == 100 and ot == 20
+
+
+def test_classify_batch_all_transient_falls_back_without_raising(_no_sleep):
+    tax = list(classifier.BASE_TAXONOMY)
+    exc = RuntimeError("503 UNAVAILABLE high demand")
+    client = _AlwaysRaise(exc)
+    # Never raises: exhausts the transient retries then returns empty (caller -> Unclassified).
+    result, it, ot = classifier.classify_batch(client, tax, [(0, "x")])
+    assert result == {}
+    attempts = classifier.get_settings().classify_retry_max_attempts
+    assert client.calls == attempts  # one full backoff cycle, then give up (no 2nd cycle)
+
+
+def test_classify_batch_non_transient_not_retried(_no_sleep):
+    tax = list(classifier.BASE_TAXONOMY)
+    exc = RuntimeError("401 UNAUTHENTICATED: API key not valid")
+    client = _AlwaysRaise(exc)
+    result, _, _ = classifier.classify_batch(client, tax, [(0, "x")])
+    assert result == {}
+    assert client.calls == 1  # non-transient -> surfaced on first call, batch falls back
+
+
+def test_derive_taxonomy_falls_back_to_base_on_persistent_503(_no_sleep):
+    exc = RuntimeError("503 UNAVAILABLE high demand")
+    client = _AlwaysRaise(exc)
+    tax, it, ot = classifier.derive_taxonomy(client, ["some transcript"])
+    assert tax == classifier.BASE_TAXONOMY
+    assert (it, ot) == (0, 0)
+    assert client.calls == classifier.get_settings().classify_retry_max_attempts
+
+
+def test_summarise_intent_retries_transient_then_succeeds(_no_sleep):
+    exc = RuntimeError("503 UNAVAILABLE high demand")
+    client = _FlakyClient(exc, fail_times=2, good="A concise narrative summary of the intent.")
+    summary, it, ot = classifier.summarise_intent(
+        client, "Loan enquiry", 10, 50.0, {"Positive": 5, "Neutral": 3, "Negative": 2}, ["s"]
+    )
+    assert summary == "A concise narrative summary of the intent."
+    assert client.calls == 3
+
+
+def test_run_completes_done_when_gemini_always_503(_no_sleep, _isolated_db):
+    """A run where EVERY Gemini call throws a transient 503 must still reach status='done'
+    with every row labelled Unclassified/Neutral — never status='error'."""
+    from domain import dataset as dataset_domain
+    from domain import classify as classify_domain
+    from db.models import CallLabelRow, ClassificationJobRow
+    from db.session import create_db_session
+
+    csv = (
+        b"call_id,Conversation Log\n"
+        b'A,"[CUSTOMER] loan question"\n'
+        b'B,"[CUSTOMER] emi failed"\n'
+        b'C,""\n'
+    )
+    ds = dataset_domain.upload_dataset("calls.csv", csv, None)
+    job = classify_domain.start_job(ds["id"], "Conversation Log", spawn=False)
+    job_id = job["job_id"]
+
+    dead_client = _AlwaysRaise(RuntimeError("503 UNAVAILABLE high demand"))
+    import asyncio
+
+    asyncio.run(classifier.run_classification(job_id, client=dead_client))
+
+    with create_db_session() as session:
+        row = session.get(ClassificationJobRow, job_id)
+        assert row.status == "done", row.status  # transient throttling never fails the job
+        assert row.error is None
+        assert row.classified_calls == 3
+        by_index = {
+            lbl.row_index: (lbl.intent, lbl.outcome)
+            for lbl in session.query(CallLabelRow)
+            .filter(CallLabelRow.dataset_id == ds["id"])
+            .all()
+        }
+    assert len(by_index) == 3
+    # Non-empty rows fell back to Unclassified/Neutral (not errored).
+    assert by_index[0] == (classifier.UNCLASSIFIED_INTENT, classifier.DEFAULT_OUTCOME)
+    assert by_index[1][0] == classifier.UNCLASSIFIED_INTENT
+    # The empty transcript is still the No-transcript sentinel (no Gemini call).
+    assert by_index[2][0] == classifier.NO_TRANSCRIPT_INTENT
+    for intent, outcome in by_index.values():
+        assert outcome in {"Positive", "Neutral", "Negative"}
 
 
 # --- percentage + aggregation math --------------------------------------------

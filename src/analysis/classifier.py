@@ -13,7 +13,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import random
 import re
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -189,6 +191,75 @@ def normalise_taxonomy(raw: list, force_base: bool = True) -> list[str]:
     return result
 
 
+# --- Transient-error retry (shared by every Gemini call) ----------------------
+
+# Substrings (matched case-insensitively against the exception type + message) that mark
+# a TRANSIENT provider error worth retrying with backoff: Gemini "high demand" 503s, rate
+# limiting, and deadline/timeout/connection blips. Anything else (auth, permission, invalid
+# request) is treated as non-transient and surfaced immediately.
+_TRANSIENT_MARKERS: tuple[str, ...] = (
+    "503",
+    "unavailable",
+    "429",
+    "resource_exhausted",
+    "resource exhausted",
+    "rate limit",
+    "ratelimit",
+    "quota",
+    "deadline",
+    "timeout",
+    "timed out",
+    "connection",
+    "temporarily",
+    "overloaded",
+    "high demand",
+    "try again",
+    "500",
+    "internal error",
+    "502",
+    "504",
+    "service unavailable",
+)
+
+
+def _is_transient_error(exc: BaseException) -> bool:
+    """True if `exc` looks like a retryable transient provider error (throttling/network),
+    False for genuinely fatal ones (auth/permission/invalid request)."""
+    blob = f"{type(exc).__name__} {exc}".lower()
+    return any(marker in blob for marker in _TRANSIENT_MARKERS)
+
+
+def _call_with_retry(
+    client: LLMClient, user: str, *, system: str | None, label: str
+) -> tuple[str, int, int]:
+    """Call `client.call_with_usage` with exponential backoff + jitter on TRANSIENT
+    provider errors (503/UNAVAILABLE, 429/RESOURCE_EXHAUSTED, deadline/timeout/connection).
+    Non-transient errors are re-raised immediately (never retried). Runs synchronously in a
+    worker thread, so `time.sleep` here does not block the event loop."""
+    s = get_settings()
+    attempts = max(1, s.classify_retry_max_attempts)
+    base = max(0.0, s.classify_retry_base_delay)
+    cap = max(base, s.classify_retry_max_delay)
+    for attempt in range(attempts):
+        try:
+            return client.call_with_usage(user, system=system)
+        except Exception as exc:  # noqa: BLE001 - classify transient vs fatal below
+            if not _is_transient_error(exc) or attempt == attempts - 1:
+                raise
+            delay = min(cap, base * (2**attempt)) + random.uniform(0, base)
+            _log.warning(
+                "gemini_transient_retry",
+                label=label,
+                attempt=attempt,
+                next_attempt=attempt + 1,
+                delay_s=round(delay, 2),
+                error=str(exc),
+            )
+            time.sleep(delay)
+    # Unreachable: the loop either returns or raises on the final attempt.
+    raise RuntimeError("retry loop exited without returning")  # pragma: no cover
+
+
 # --- Gemini calls (module-level so tests can wrap/count them) -----------------
 
 def derive_taxonomy(
@@ -208,11 +279,19 @@ def derive_taxonomy(
     )
     system = _with_business_context(_prompt("derive_taxonomy"), business_context)
     try:
-        text, it, ot = client.call_with_usage(user, system=system)
+        text, it, ot = _call_with_retry(
+            client, user, system=system, label="derive_taxonomy"
+        )
         raw = _parse_json_array(text)
         return normalise_taxonomy(raw, force_base=force_base), it, ot
     except Exception as exc:  # never fail the job on taxonomy derivation
-        _log.warning("taxonomy_derivation_failed", error=str(exc))
+        # Transient throttling that exhausted retries lands here too: fall back to the
+        # generic base taxonomy and keep going (context-mode still proceeds).
+        _log.warning(
+            "taxonomy_derivation_fallback_base",
+            error=str(exc),
+            transient=_is_transient_error(exc),
+        )
         return list(BASE_TAXONOMY), 0, 0
 
 
@@ -237,27 +316,45 @@ def classify_batch(
     system = _with_business_context(_prompt("classify_calls"), business_context)
 
     total_it = total_ot = 0
-    for attempt in range(2):  # initial + one retry
+    for attempt in range(2):  # initial + one retry for MALFORMED JSON
+        # The network call itself is retried (transient 503/429/timeout) inside
+        # _call_with_retry. If that exhausts its retries — or hits a non-transient error —
+        # it raises here; we stop and let the caller mark the batch Unclassified/Neutral
+        # (never re-running the full backoff cycle a second time for a dead endpoint).
         try:
-            text, it, ot = client.call_with_usage(user, system=system)
-            total_it += it
-            total_ot += ot
+            text, it, ot = _call_with_retry(
+                client, user, system=system, label="classify_batch"
+            )
+        except Exception as exc:
+            _log.warning(
+                "classify_batch_call_failed",
+                attempt=attempt,
+                transient=_is_transient_error(exc),
+                error=str(exc),
+            )
+            break
+        total_it += it
+        total_ot += ot
+        try:
             arr = _parse_json_array(text)
-            out: dict[int, tuple[str, str]] = {}
-            for item in arr:
-                if not isinstance(item, dict) or "call_index" not in item:
-                    continue
-                try:
-                    idx = int(item["call_index"])
-                except (TypeError, ValueError):
-                    continue
-                intent = coerce_intent(item.get("intent"), taxonomy)
-                outcome = coerce_outcome(item.get("outcome"))
-                out[idx] = (intent, outcome)
-            if out:
-                return out, total_it, total_ot
         except Exception as exc:
             _log.warning("classify_batch_parse_failed", attempt=attempt, error=str(exc))
+            continue
+        out: dict[int, tuple[str, str]] = {}
+        for item in arr:
+            if not isinstance(item, dict) or "call_index" not in item:
+                continue
+            try:
+                idx = int(item["call_index"])
+            except (TypeError, ValueError):
+                continue
+            intent = coerce_intent(item.get("intent"), taxonomy)
+            outcome = coerce_outcome(item.get("outcome"))
+            out[idx] = (intent, outcome)
+        if out:
+            return out, total_it, total_ot
+    # Every attempt exhausted: signal fallback so a degraded run is visible without failing.
+    _log.warning("classify_batch_fallback_unclassified", batch_size=len(batch))
     return {}, total_it, total_ot
 
 
@@ -318,7 +415,9 @@ def summarise_intent(
     )
     system = _with_business_context(_prompt("summarise_intent"), business_context)
     try:
-        text, it, ot = client.call_with_usage(user, system=system)
+        text, it, ot = _call_with_retry(
+            client, user, system=system, label="summarise_intent"
+        )
         summary = _strip_code_fences(text).strip()
         if not summary:
             raise ValueError("empty summary")
@@ -622,7 +721,9 @@ async def _run(job_id: str, client: LLMClient, settings) -> None:
     # 6. Batch the pending rows; classify with bounded concurrency.
     batch_size = max(1, settings.classify_batch_size)
     batches = [pending[i : i + batch_size] for i in range(0, len(pending), batch_size)]
-    sem = asyncio.Semaphore(max(1, settings.classify_concurrency))
+    # Conservative concurrency bound: high concurrency provokes Gemini "high demand" 503s
+    # on large (12k-row) jobs. Reliability over raw speed — a big run may take minutes.
+    sem = asyncio.Semaphore(max(1, settings.classify_max_concurrency))
 
     async def _process(batch: list[tuple[int, str, str]]) -> None:
         indexed = [(row_index, text) for row_index, _cid, text in batch]
@@ -650,7 +751,15 @@ async def _run(job_id: str, client: LLMClient, settings) -> None:
                 )
 
     if batches:
-        await asyncio.gather(*(_process(b) for b in batches))
+        # return_exceptions=True: one batch's ultimate failure never cancels its siblings.
+        # _process already falls back to Unclassified/Neutral internally, so a returned
+        # exception is only a defensive last resort — log it and keep the job alive.
+        results = await asyncio.gather(
+            *(_process(b) for b in batches), return_exceptions=True
+        )
+        for exc in results:
+            if isinstance(exc, BaseException):
+                _log.warning("classify_batch_task_exception", error=str(exc))
 
     # 7. Per-intent narrative summaries (one Gemini call per distinct intent; cached by
     #    the same key as the labels, so an unchanged resume makes no new calls).

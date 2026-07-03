@@ -29,7 +29,16 @@ class Settings(BaseSettings):
     # Conversation Intelligence (Phase 4) classifier tuning
     classify_model: str = Field(default="gemini-2.5-flash-lite")  # fast, low-cost model
     classify_batch_size: int = Field(default=15)     # transcripts per Gemini request
-    classify_concurrency: int = Field(default=4)     # bounded concurrent batches
+    classify_concurrency: int = Field(default=4)     # bounded concurrent batches (legacy alias)
+    # Max concurrent Gemini classify batches. Conservative by design: hammering the API
+    # at high concurrency provokes 503 "high demand" throttling on 12k-row jobs, so we
+    # trade raw speed for reliability. Honoured by the classification semaphore.
+    classify_max_concurrency: int = Field(default=4)
+    # Transient-error retry-with-backoff (503/UNAVAILABLE, 429/RESOURCE_EXHAUSTED,
+    # deadline/timeout/connection). Applied around every Gemini call.
+    classify_retry_max_attempts: int = Field(default=5)   # total attempts (incl. first)
+    classify_retry_base_delay: float = Field(default=1.0)  # seconds; grows exponentially
+    classify_retry_max_delay: float = Field(default=8.0)   # per-attempt backoff cap (s)
     transcript_max_chars: int = Field(default=6000)  # per-transcript truncation
     taxonomy_sample_size: int = Field(default=100)   # transcripts sampled to derive taxonomy
     summary_sample_size: int = Field(default=20)     # transcripts sampled per per-intent summary
