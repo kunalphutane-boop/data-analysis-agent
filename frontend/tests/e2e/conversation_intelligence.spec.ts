@@ -95,6 +95,14 @@ test('analyze conversations -> progress -> breakdowns + cross-tab + download', a
   await expect(page.getByTestId('intent-breakdown')).toBeVisible()
   await expect(page.getByTestId('intent-rows').locator('tr').first()).toBeVisible()
 
+  // Per-intent summary: expand the first intent that has a summary toggle and read it.
+  const summaryToggle = page.getByTestId('intent-summary-toggle').first()
+  await expect(summaryToggle).toBeVisible()
+  await summaryToggle.click()
+  const summaryText = page.getByTestId('intent-summary-text').first()
+  await expect(summaryText).toBeVisible()
+  await expect(summaryText).not.toBeEmpty()
+
   // Outcome breakdown — Positive / Neutral / Negative rows.
   const outcome = page.getByTestId('outcome-breakdown')
   await expect(outcome).toBeVisible()

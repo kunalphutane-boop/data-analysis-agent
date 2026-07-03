@@ -22,7 +22,7 @@ import pytest
 
 from analysis import classifier
 from db import session as session_module
-from db.models import CallLabelRow, ClassificationJobRow
+from db.models import CallLabelRow, ClassificationJobRow, IntentSummaryRow
 from domain import classify as classify_domain
 from domain import dataset as dataset_domain
 from domain import session as session_domain
@@ -186,6 +186,88 @@ def test_full_classification_and_idempotency(api_client, fixture_df, monkeypatch
     prog2 = api_client.get(f"/classify/jobs/{job_id_2}").json()["data"]
     assert prog2["status"] == "done"
     assert prog2["classified_calls"] == n_rows
+
+
+@pytest.mark.usefixtures("_require_llm_key")
+def test_per_intent_summaries_and_cache(api_client, fixture_df, monkeypatch):
+    """Every intent in the breakdown gets a non-empty narrative summary (real Gemini);
+    resuming the same dataset+column+context returns the cached summaries with NO extra
+    classification and NO extra summary Gemini calls."""
+    n_rows = len(fixture_df)
+
+    counter = {"classify": 0, "taxonomy": 0, "summarise": 0}
+    lock = threading.Lock()
+    orig_classify = classifier.classify_batch
+    orig_taxonomy = classifier.derive_taxonomy
+    orig_summarise = classifier.summarise_intent
+
+    def counting_classify(*a, **k):
+        with lock:
+            counter["classify"] += 1
+        return orig_classify(*a, **k)
+
+    def counting_taxonomy(*a, **k):
+        with lock:
+            counter["taxonomy"] += 1
+        return orig_taxonomy(*a, **k)
+
+    def counting_summarise(*a, **k):
+        with lock:
+            counter["summarise"] += 1
+        return orig_summarise(*a, **k)
+
+    monkeypatch.setattr(classifier, "classify_batch", counting_classify)
+    monkeypatch.setattr(classifier, "derive_taxonomy", counting_taxonomy)
+    monkeypatch.setattr(classifier, "summarise_intent", counting_summarise)
+
+    data = _upload()
+    dataset_id = data["id"]
+
+    # --- First run: labels + a summary per (non-sentinel) intent ---------------
+    job_id = _run_job(dataset_id)
+    assert counter["summarise"] >= 1, "expected at least one real per-intent summary call"
+
+    res = api_client.get(f"/classify/jobs/{job_id}/results").json()["data"]
+    breakdown = res["intent_breakdown"]
+    assert breakdown, "expected a non-empty intent breakdown"
+    # EVERY intent in the breakdown carries a non-empty summary string.
+    for row in breakdown:
+        assert "summary" in row, row
+        assert isinstance(row["summary"], str)
+        assert row["summary"].strip(), f"intent {row['intent']!r} has an empty summary"
+
+    # One summary row persisted per distinct intent (idempotent by the cache key).
+    from sqlalchemy.orm import Session
+
+    distinct_intents = {row["intent"] for row in breakdown}
+    with Session(session_module._engine) as s:
+        summary_rows = s.query(IntentSummaryRow).filter(
+            IntentSummaryRow.dataset_id == dataset_id,
+            IntentSummaryRow.text_column == TEXT_COLUMN,
+        ).all()
+    assert {r.intent for r in summary_rows} == distinct_intents
+    assert len(summary_rows) == len(distinct_intents), "one summary per distinct intent"
+
+    # --- Second run (idempotent resume): cached summaries, no new Gemini work ---
+    first_summaries = {r["intent"]: r["summary"] for r in breakdown}
+    counter["classify"] = counter["taxonomy"] = counter["summarise"] = 0
+    job_id_2 = _run_job(dataset_id)
+
+    assert counter["classify"] == 0, "resume must not re-classify"
+    assert counter["taxonomy"] == 0, "resume must not re-derive taxonomy"
+    assert counter["summarise"] == 0, "resume must return cached summaries, not regenerate"
+
+    res2 = api_client.get(f"/classify/jobs/{job_id_2}/results").json()["data"]
+    cached = {r["intent"]: r["summary"] for r in res2["intent_breakdown"]}
+    assert cached == first_summaries, "cached summaries must be returned unchanged on resume"
+
+    # No duplicate summary rows created on resume.
+    with Session(session_module._engine) as s:
+        again = s.query(IntentSummaryRow).filter(
+            IntentSummaryRow.dataset_id == dataset_id,
+            IntentSummaryRow.text_column == TEXT_COLUMN,
+        ).count()
+    assert again == len(distinct_intents), "resume must not create duplicate summary rows"
 
 
 @pytest.mark.usefixtures("_require_llm_key")

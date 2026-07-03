@@ -146,7 +146,8 @@ Routers live in `src/api/classify.py`, registered in `src/api/__init__.py`. All 
   "job_id": "uuid", "status": "done", "total_calls": 12342,
   "taxonomy": ["Loan enquiry", "EMI/Payment", "Account balance/Statement",
                "Verification/Registration", "Branch/Timing", "Complaint/Escalation", "Other/Unclear"],
-  "intent_breakdown": [{"intent": "Loan enquiry", "count": 3120, "pct": 25.3}],
+  "intent_breakdown": [{"intent": "Loan enquiry", "count": 3120, "pct": 25.3,
+                        "summary": "Customers mostly ask about eligibility and interest rates... resolves largely Positive."}],
   "outcome_breakdown": [{"outcome": "Positive", "count": 5010, "pct": 40.6},
                          {"outcome": "Neutral", "count": 4200, "pct": 34.0},
                          {"outcome": "Negative", "count": 3132, "pct": 25.4}],
@@ -155,7 +156,7 @@ Routers live in `src/api/classify.py`, registered in `src/api/__init__.py`. All 
   "input_tokens": 540221, "output_tokens": 41233, "cost_usd": 0.191
 }, "error": null}
 ```
-`intent_breakdown` and `outcome_breakdown` `pct` fields each sum to 100 (±0.1). In each `cross_tab` row `positive + neutral + negative == total`.
+`intent_breakdown` and `outcome_breakdown` `pct` fields each sum to 100 (±0.1). In each `cross_tab` row `positive + neutral + negative == total`. Each `intent_breakdown` row also carries a `summary` — a concise (~2-4 sentence) narrative for that intent (what customers call about, how the calls resolve given the outcome mix, notable patterns), generated once per intent by Gemini and cached with the run (same dataset+column+context resumes and returns the cached summaries with no new Gemini calls; a changed `business_context` refreshes them). `summary` is `""` while a run is still classifying / before summaries are generated.
 **Errors:** 404 `not_found`.
 
 ### `GET /classify/jobs/{job_id}/labelled.csv`

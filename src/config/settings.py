@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     classify_concurrency: int = Field(default=4)     # bounded concurrent batches
     transcript_max_chars: int = Field(default=6000)  # per-transcript truncation
     taxonomy_sample_size: int = Field(default=100)   # transcripts sampled to derive taxonomy
+    summary_sample_size: int = Field(default=20)     # transcripts sampled per per-intent summary
+    summary_transcript_max_chars: int = Field(default=1200)  # sample truncation for summaries
 
 
 _settings: Settings | None = None

@@ -17,7 +17,13 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from analysis import classifier, loader
-from db.models import CallLabelRow, ClassificationJobRow, DatasetRow, SessionRow
+from db.models import (
+    CallLabelRow,
+    ClassificationJobRow,
+    DatasetRow,
+    IntentSummaryRow,
+    SessionRow,
+)
 from db.session import create_db_session
 
 
@@ -158,7 +164,23 @@ def _load_labels(
     )
 
 
-def _aggregate(labels: list[CallLabelRow]) -> dict:
+def _load_summaries(
+    session, dataset_id: str, text_column: str, context_hash: str
+) -> dict[str, str]:
+    rows = (
+        session.query(IntentSummaryRow)
+        .filter(
+            IntentSummaryRow.dataset_id == dataset_id,
+            IntentSummaryRow.text_column == text_column,
+            IntentSummaryRow.context_hash == context_hash,
+        )
+        .all()
+    )
+    return {r.intent: r.summary for r in rows}
+
+
+def _aggregate(labels: list[CallLabelRow], summaries: dict[str, str] | None = None) -> dict:
+    summaries = summaries or {}
     total = len(labels)
     intent_counts: dict[str, int] = {}
     outcome_counts: dict[str, int] = {"Positive": 0, "Neutral": 0, "Negative": 0}
@@ -174,7 +196,12 @@ def _aggregate(labels: list[CallLabelRow]) -> dict:
     intents = list(intent_counts.keys())
     intent_pcts = _pcts([intent_counts[i] for i in intents], total)
     intent_breakdown = [
-        {"intent": i, "count": intent_counts[i], "pct": p}
+        {
+            "intent": i,
+            "count": intent_counts[i],
+            "pct": p,
+            "summary": summaries.get(i, ""),
+        }
         for i, p in zip(intents, intent_pcts)
     ]
 
@@ -213,7 +240,10 @@ def get_results(job_id: str) -> dict:
         if job is None:
             raise NotFoundError(f"Job {job_id} not found.")
         labels = _load_labels(session, job.dataset_id, job.text_column, job.context_hash)
-        agg = _aggregate(labels)
+        summaries = _load_summaries(
+            session, job.dataset_id, job.text_column, job.context_hash
+        )
+        agg = _aggregate(labels, summaries)
         taxonomy = json.loads(job.taxonomy_json) if job.taxonomy_json else []
         return {
             "job_id": job.id,

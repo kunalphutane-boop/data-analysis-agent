@@ -21,6 +21,7 @@ import {
   type ClassifyProgress,
   type ClassifyResults,
   type Dataset,
+  type IntentBreakdownRow,
 } from '@/lib/api'
 
 const BUSINESS_CONTEXT_HINT =
@@ -84,12 +85,65 @@ function ProgressView({ progress }: { progress: ClassifyProgress }) {
   )
 }
 
+function IntentRow({ row }: { row: IntentBreakdownRow }) {
+  const [expanded, setExpanded] = useState(false)
+  const hasSummary = row.summary.trim().length > 0
+  return (
+    <>
+      <tr className="border-b border-gray-100 last:border-0">
+        <td className="py-2 pr-4 font-medium text-gray-800">
+          <button
+            type="button"
+            data-testid="intent-summary-toggle"
+            onClick={() => setExpanded((v) => !v)}
+            disabled={!hasSummary}
+            className="inline-flex items-center gap-1.5 text-left font-medium text-gray-800 hover:text-blue-700 disabled:cursor-default disabled:text-gray-800 disabled:hover:text-gray-800"
+            aria-expanded={expanded}
+          >
+            {hasSummary && (
+              <span
+                className={`inline-block text-[10px] text-gray-400 transition-transform ${
+                  expanded ? 'rotate-90' : ''
+                }`}
+              >
+                ▶
+              </span>
+            )}
+            {row.intent}
+          </button>
+        </td>
+        <td className="py-2 pr-4 text-gray-700">{row.count.toLocaleString()}</td>
+        <td className="py-2 pr-4 text-gray-700">{pct(row.pct)}</td>
+      </tr>
+      {expanded && hasSummary && (
+        <tr data-testid="intent-summary-row" className="border-b border-gray-100 last:border-0">
+          <td colSpan={3} className="px-1 pb-3 pt-0">
+            <p
+              data-testid="intent-summary-text"
+              className="rounded-md bg-blue-50/60 px-3 py-2 text-xs leading-relaxed text-gray-700"
+            >
+              {row.summary}
+            </p>
+          </td>
+        </tr>
+      )}
+    </>
+  )
+}
+
 function IntentBreakdown({ results }: { results: ClassifyResults }) {
+  const anySummary = results.intent_breakdown.some((r) => r.summary.trim().length > 0)
   return (
     <div data-testid="intent-breakdown">
       <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
         Intent breakdown
       </h4>
+      {anySummary && (
+        <p className="mb-2 text-xs text-gray-400">
+          Click an intent to read its summary — what customers call about, how it resolves,
+          and notable patterns.
+        </p>
+      )}
       <table className="w-full border-collapse text-left text-sm">
         <thead>
           <tr className="border-b border-gray-200 text-xs uppercase tracking-wide text-gray-400">
@@ -100,11 +154,7 @@ function IntentBreakdown({ results }: { results: ClassifyResults }) {
         </thead>
         <tbody data-testid="intent-rows">
           {results.intent_breakdown.map((r) => (
-            <tr key={r.intent} className="border-b border-gray-100 last:border-0">
-              <td className="py-2 pr-4 font-medium text-gray-800">{r.intent}</td>
-              <td className="py-2 pr-4 text-gray-700">{r.count.toLocaleString()}</td>
-              <td className="py-2 pr-4 text-gray-700">{pct(r.pct)}</td>
-            </tr>
+            <IntentRow key={r.intent} row={r} />
           ))}
         </tbody>
       </table>

@@ -20,7 +20,13 @@ import pandas as pd
 
 from analysis import loader
 from config.settings import get_settings
-from db.models import CallLabelRow, ClassificationJobRow, DatasetRow, SessionRow
+from db.models import (
+    CallLabelRow,
+    ClassificationJobRow,
+    DatasetRow,
+    IntentSummaryRow,
+    SessionRow,
+)
 from db.session import create_db_session
 from llm import pricing
 from llm.client import LLMClient
@@ -255,6 +261,78 @@ def classify_batch(
     return {}, total_it, total_ot
 
 
+# --- Per-intent summaries (Gemini call per distinct intent) --------------------
+
+# Sentinel intents that are not worth (and don't make sense) sending to Gemini for a
+# narrative — they get a deterministic canned summary instead (still non-empty).
+_SENTINEL_INTENTS = {NO_TRANSCRIPT_INTENT, UNCLASSIFIED_INTENT}
+
+
+def _canned_summary(intent: str, count: int, pct: float) -> str:
+    """A deterministic, no-LLM summary for sentinel intents (No transcript / Unclassified)."""
+    if intent == NO_TRANSCRIPT_INTENT:
+        return (
+            f"{count} calls ({pct:.1f}%) had no transcript text to analyse, so they were "
+            "labelled without an LLM call and default to a Neutral outcome. These are blank "
+            "or missing recordings rather than a real customer intent."
+        )
+    if intent == UNCLASSIFIED_INTENT:
+        return (
+            f"{count} calls ({pct:.1f}%) could not be reliably classified into the taxonomy "
+            "(the model's response was malformed after a retry) and default to Neutral. "
+            "Re-running classification may resolve them."
+        )
+    return f"{count} calls ({pct:.1f}%) in this category."
+
+
+def _format_outcome_dist(outcome_counts: dict[str, int]) -> str:
+    return (
+        f"Positive={outcome_counts.get('Positive', 0)}, "
+        f"Neutral={outcome_counts.get('Neutral', 0)}, "
+        f"Negative={outcome_counts.get('Negative', 0)}"
+    )
+
+
+def summarise_intent(
+    client: LLMClient,
+    intent: str,
+    count: int,
+    pct: float,
+    outcome_counts: dict[str, int],
+    samples: list[str],
+    business_context: str = "",
+) -> tuple[str, int, int]:
+    """Generate a concise narrative summary for ONE intent category via a single Gemini
+    call. Grounded in the intent's count/share, its Outcome distribution, a representative
+    sample of transcripts, and the session's business context. Never raises — falls back
+    to a short deterministic summary on any failure. Returns (summary, input_tokens,
+    output_tokens)."""
+    listing = "\n".join(f"- {t}" for t in samples) if samples else "(no sample transcripts)"
+    user = (
+        f"Intent category: {intent}\n"
+        f"Calls in this intent: {count} ({pct:.1f}% of all classified calls)\n"
+        f"Outcome distribution: {_format_outcome_dist(outcome_counts)}\n\n"
+        "Representative sample of transcripts classified into this intent:\n"
+        f"{listing}\n\n"
+        "Write the 2-4 sentence summary for this intent now."
+    )
+    system = _with_business_context(_prompt("summarise_intent"), business_context)
+    try:
+        text, it, ot = client.call_with_usage(user, system=system)
+        summary = _strip_code_fences(text).strip()
+        if not summary:
+            raise ValueError("empty summary")
+        return summary, it, ot
+    except Exception as exc:  # never fail the job on a summary
+        _log.warning("intent_summary_failed", intent=intent, error=str(exc))
+        return (
+            f"{count} calls ({pct:.1f}%) classified as {intent}. "
+            f"Outcome mix — {_format_outcome_dist(outcome_counts)}.",
+            0,
+            0,
+        )
+
+
 # --- Persistence helpers ------------------------------------------------------
 
 def _labelled_row_indices(
@@ -270,6 +348,20 @@ def _labelled_row_indices(
         .all()
     )
     return {r[0] for r in rows}
+
+
+def _load_labels_for_key(
+    session, dataset_id: str, text_column: str, context_hash: str
+) -> list[CallLabelRow]:
+    return (
+        session.query(CallLabelRow)
+        .filter(
+            CallLabelRow.dataset_id == dataset_id,
+            CallLabelRow.text_column == text_column,
+            CallLabelRow.context_hash == context_hash,
+        )
+        .all()
+    )
 
 
 def _upsert_labels(session, job_id, dataset_id, text_column, context_hash, labels):
@@ -295,6 +387,111 @@ def _upsert_labels(session, job_id, dataset_id, text_column, context_hash, label
         existing.add(row_index)
         written += 1
     return written
+
+
+def _existing_summary_intents(
+    session, dataset_id: str, text_column: str, context_hash: str
+) -> set[str]:
+    rows = (
+        session.query(IntentSummaryRow.intent)
+        .filter(
+            IntentSummaryRow.dataset_id == dataset_id,
+            IntentSummaryRow.text_column == text_column,
+            IntentSummaryRow.context_hash == context_hash,
+        )
+        .all()
+    )
+    return {r[0] for r in rows}
+
+
+async def generate_intent_summaries(
+    job_id: str,
+    dataset_id: str,
+    text_column: str,
+    context_hash: str,
+    transcripts: list,
+    business_context: str,
+    client: LLMClient,
+    settings,
+    totals: dict,
+) -> None:
+    """After per-call labels are persisted, generate one concise narrative summary per
+    distinct Intent (a single Gemini call each — there are only ~6-12 intents) and cache
+    it keyed by (dataset_id, text_column, context_hash, intent). Idempotent/resumable:
+    intents that already have a cached summary are skipped, so an unchanged run resumes
+    with no new Gemini calls. Rolls summary tokens/cost into the job's accounting."""
+    with create_db_session() as session:
+        label_rows = [
+            (lbl.row_index, lbl.intent, lbl.outcome)
+            for lbl in _load_labels_for_key(session, dataset_id, text_column, context_hash)
+        ]
+        existing = _existing_summary_intents(session, dataset_id, text_column, context_hash)
+
+    total = len(label_rows)
+    if total == 0:
+        return
+
+    # Aggregate per-intent: count, outcome distribution, and a capped transcript sample.
+    per_intent: dict[str, dict] = {}
+    for row_index, intent, outcome in label_rows:
+        d = per_intent.setdefault(
+            intent,
+            {"count": 0, "outcomes": {"Positive": 0, "Neutral": 0, "Negative": 0}, "samples": []},
+        )
+        d["count"] += 1
+        d["outcomes"][outcome] = d["outcomes"].get(outcome, 0) + 1
+        if len(d["samples"]) < settings.summary_sample_size and 0 <= row_index < len(transcripts):
+            raw = transcripts[row_index]
+            if not is_blank(raw):
+                d["samples"].append(
+                    _truncate(str(raw), settings.summary_transcript_max_chars)
+                )
+
+    pending_intents = [i for i in per_intent if i not in existing]
+    if not pending_intents:
+        return
+
+    for intent in pending_intents:
+        d = per_intent[intent]
+        pct = round(100.0 * d["count"] / total, 1) if total else 0.0
+        if intent in _SENTINEL_INTENTS:
+            summary, it, ot = _canned_summary(intent, d["count"], pct), 0, 0
+        else:
+            summary, it, ot = await asyncio.to_thread(
+                summarise_intent,
+                client,
+                intent,
+                d["count"],
+                pct,
+                d["outcomes"],
+                d["samples"],
+                business_context,
+            )
+        totals["it"] += it
+        totals["ot"] += ot
+        with create_db_session() as session:
+            # Guard against a concurrent writer having filled this intent in the meantime.
+            if intent in _existing_summary_intents(
+                session, dataset_id, text_column, context_hash
+            ):
+                continue
+            session.add(
+                IntentSummaryRow(
+                    job_id=job_id,
+                    dataset_id=dataset_id,
+                    text_column=text_column,
+                    context_hash=context_hash,
+                    intent=intent,
+                    summary=summary,
+                )
+            )
+            job = session.get(ClassificationJobRow, job_id)
+            if job is not None:
+                job.input_tokens = totals["it"]
+                job.output_tokens = totals["ot"]
+                job.cost_usd = pricing.cost_usd(
+                    settings.classify_model, totals["it"], totals["ot"]
+                )
 
 
 # --- Orchestration ------------------------------------------------------------
@@ -455,7 +652,25 @@ async def _run(job_id: str, client: LLMClient, settings) -> None:
     if batches:
         await asyncio.gather(*(_process(b) for b in batches))
 
-    # 7. Finalise.
+    # 7. Per-intent narrative summaries (one Gemini call per distinct intent; cached by
+    #    the same key as the labels, so an unchanged resume makes no new calls).
+    with create_db_session() as session:
+        job = session.get(ClassificationJobRow, job_id)
+        job_errored = job is None or job.status == "error"
+    if not job_errored:
+        await generate_intent_summaries(
+            job_id,
+            dataset_id,
+            text_column,
+            context_hash,
+            transcripts,
+            business_context,
+            client,
+            settings,
+            totals,
+        )
+
+    # 8. Finalise.
     with create_db_session() as session:
         job = session.get(ClassificationJobRow, job_id)
         if job is not None and job.status != "error":

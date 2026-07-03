@@ -189,6 +189,9 @@ export interface IntentBreakdownRow {
   intent: string
   count: number
   pct: number
+  // Narrative summary for this intent (what customers call about, how it resolves,
+  // notable patterns). May be "" while a run is still classifying / before generation.
+  summary: string
 }
 
 export interface OutcomeBreakdownRow {

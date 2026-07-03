@@ -184,3 +184,44 @@ class CallLabelRow(Base):
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, default=_now
     )
+
+
+class IntentSummaryRow(Base):
+    """One narrative summary per distinct Intent for a classification run. Cached by
+    the same key as the per-call labels — (dataset_id, text_column, context_hash,
+    intent) — so an unchanged dataset+column+context resumes and reuses the summaries
+    (no new Gemini calls), while a changed business context refreshes them."""
+
+    __tablename__ = "intent_summaries"
+    __table_args__ = (
+        UniqueConstraint(
+            "dataset_id",
+            "text_column",
+            "context_hash",
+            "intent",
+            name="uq_intent_summaries_key",
+        ),
+        Index(
+            "ix_intent_summaries_key",
+            "dataset_id",
+            "text_column",
+            "context_hash",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    job_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("classification_jobs.id"), nullable=False
+    )
+    dataset_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("datasets.id"), nullable=False
+    )
+    text_column: Mapped[str] = mapped_column(Text, nullable=False)
+    context_hash: Mapped[str] = mapped_column(
+        Text, nullable=False, default=EMPTY_CONTEXT_HASH
+    )
+    intent: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, default=_now
+    )
