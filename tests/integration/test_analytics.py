@@ -132,6 +132,68 @@ def test_ambiguous_question_asks_for_clarification(api_client):
     assert payload["answer"]  # surfaces the clarifying question
 
 
+def _upload_transcript_csv(api_client) -> dict:
+    """A small synthetic call-log with a free-text transcript column + repeated ids."""
+    rows = [
+        ("num1", "[CUSTOMER] I want to check my loan EMI due date || [AGENT] Sure"),
+        ("num1", "[CUSTOMER] What is my next EMI payment amount || [AGENT] Let me check"),
+        ("num2", "[CUSTOMER] I need my account balance and statement || [AGENT] Ok"),
+        ("num3", "[CUSTOMER] The line is not audible, I cannot hear you || [AGENT] Sorry"),
+        ("num4", "[CUSTOMER] I want to complete my registration verification || [AGENT] Sure"),
+        ("num5", "[CUSTOMER] What are your branch timings today || [AGENT] 10 to 5"),
+    ]
+    header = "dialled_number,Conversation Log\n"
+    body = "".join(f'{n},"{log}"\n' for n, log in rows)
+    csv = (header + body).encode("utf-8")
+    files = {"file": ("calls.csv", io.BytesIO(csv), "text/csv")}
+    up = api_client.post("/datasets/upload", files=files)
+    assert up.status_code == 200, up.text
+    return up.json()["data"]
+
+
+@pytest.mark.usefixtures("_require_llm_key")
+def test_openended_intent_question_is_answered_not_clarified(api_client):
+    """An open-ended 'reasons customers call, with %' over a transcript column must
+    be answered best-effort (needs_clarification=False) with pandas code + percentages."""
+    data = _upload_transcript_csv(api_client)
+    r = api_client.post(
+        "/ask",
+        json={
+            "session_id": data["session_id"],
+            "dataset_id": data["id"],
+            "question": "What are the main reasons customers call, with %?",
+        },
+    )
+    assert r.status_code == 200, r.text
+    payload = r.json()["data"]
+
+    assert payload["needs_clarification"] is False, payload.get("clarify_question")
+    assert payload["error"] is None
+    assert payload["generated_code"], "expected non-empty generated pandas code"
+    assert payload["answer"], "expected a non-empty answer"
+    # A '% of calls' answer must surface percentage figures.
+    assert "%" in payload["answer"], payload["answer"]
+
+
+@pytest.mark.usefixtures("_require_llm_key")
+def test_nonexistent_column_still_asks_for_clarification(api_client):
+    """A question referencing columns that plainly do not exist must clarify."""
+    data = _upload_transcript_csv(api_client)
+    r = api_client.post(
+        "/ask",
+        json={
+            "session_id": data["session_id"],
+            "dataset_id": data["id"],
+            "question": "What is the total revenue by region?",
+        },
+    )
+    assert r.status_code == 200, r.text
+    payload = r.json()["data"]
+    assert payload["needs_clarification"] is True
+    assert payload["clarify_question"]
+    assert payload["answer"]
+
+
 @pytest.mark.usefixtures("_require_llm_key")
 def test_returns_grounded_answer_and_persists(api_client, full_df):
     """A normal ask exercises the full loop and persists a messages row."""

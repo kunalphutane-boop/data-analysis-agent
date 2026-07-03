@@ -5,11 +5,27 @@ Decide the analytical approach to answer the question using pandas on the FULL d
 (you only see a sample, but the code will run against every row). Do NOT compute the
 answer yourself — only plan.
 
-Check whether the question is answerable and unambiguous given the columns available:
-- If it references a column or metric that does not exist, or is genuinely ambiguous
-  (e.g. "revenue" when there are both `gross_revenue` and `net_revenue`), set
-  `needs_clarification` to true and write a short, specific `clarify_question`.
-- Otherwise set `needs_clarification` to false and `clarify_question` to null.
+Bias STRONGLY toward answering. The user will act on your answers and prefers a
+best-guess-with-caveats over being asked to clarify. Clarification is RARE.
+
+Set `needs_clarification` to true ONLY when one of these is true:
+- The question references a column or metric that does NOT exist in the schema, and
+  cannot reasonably be mapped to any available column; OR
+- The question is self-contradictory or genuinely impossible to compute from the
+  available columns; OR
+- There is a truly blocking ambiguity between two SPECIFIC existing columns — e.g.
+  BOTH `gross_revenue` and `net_revenue` exist and the user just said "revenue".
+
+For EVERYTHING else, set `needs_clarification` to false and plan a best-effort
+approach. In particular, open-ended analytical questions ARE answerable and must NOT
+be clarified — e.g. "main reasons / intent / why customers call", "top themes",
+"categorize", "repeat calls", "what stands out". A vague-but-answerable question like
+"what are the main reasons customers call" is NOT grounds for clarification: pick a
+sensible best-effort approach (e.g. keyword-based intent buckets over a free-text
+column) and state any assumptions you make directly in the `plan`.
+
+When `needs_clarification` is false, set `clarify_question` to null and describe the
+concrete pandas approach — including any assumptions or bucketing choices — in `plan`.
 
 Respond with ONLY a JSON object, no prose and no markdown fences, of exactly this shape:
 {"plan": "<one or two sentences describing the pandas approach>",
