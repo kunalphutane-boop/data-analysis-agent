@@ -208,6 +208,29 @@ export interface CrossTabRow {
   total: number
 }
 
+// One bucket of the calls-per-caller distribution (how many callers made N calls).
+export interface RepeatDistributionRow {
+  calls: string // "1", "2", "3", "4", "5+"
+  callers: number
+}
+
+export interface TopRepeatCaller {
+  call_id: string
+  count: number
+}
+
+// Deterministic repeat-caller analysis, derived from the stored per-call `call_id`.
+export interface RepeatCalls {
+  total_calls: number
+  identified_calls: number // rows carrying a non-blank call_id
+  unique_callers: number
+  repeat_callers: number // callers seen on more than one row
+  repeat_caller_pct: number // repeat_callers / unique_callers
+  repeat_call_pct: number // calls from repeat callers / identified_calls
+  distribution: RepeatDistributionRow[]
+  top_repeat_callers: TopRepeatCaller[]
+}
+
 // GET /classify/jobs/{job_id}/results response.
 export interface ClassifyResults {
   job_id: string
@@ -217,6 +240,7 @@ export interface ClassifyResults {
   intent_breakdown: IntentBreakdownRow[]
   outcome_breakdown: OutcomeBreakdownRow[]
   cross_tab: CrossTabRow[]
+  repeat_calls: RepeatCalls
   input_tokens: number
   output_tokens: number
   cost_usd: number

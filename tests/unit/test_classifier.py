@@ -185,6 +185,68 @@ def test_detect_call_id_column():
     assert classifier.detect_call_id_column(["region", "revenue"]) is None
 
 
+# --- repeat-calls analysis (deterministic, no LLM) ----------------------------
+
+def _rc_label(call_id):
+    # _repeat_calls only reads .call_id off each label row.
+    return SimpleNamespace(call_id=call_id)
+
+
+def test_repeat_calls_counts_and_distribution():
+    # A: 3 calls, B: 2 calls, C: 1 call, plus one blank-id row.
+    labels = [
+        _rc_label("A"), _rc_label("A"), _rc_label("A"),
+        _rc_label("B"), _rc_label("B"),
+        _rc_label("C"),
+        _rc_label(""),  # unattributed — counts toward total only
+    ]
+    rc = classify_domain._repeat_calls(labels)
+    assert rc["total_calls"] == 7
+    assert rc["identified_calls"] == 6
+    assert rc["unique_callers"] == 3
+    assert rc["repeat_callers"] == 2  # A and B
+    # 2 of 3 callers repeat; 5 of 6 identified calls come from repeat callers.
+    assert rc["repeat_caller_pct"] == pytest.approx(66.7, abs=0.1)
+    assert rc["repeat_call_pct"] == pytest.approx(83.3, abs=0.1)
+    # Distribution buckets sum to unique_callers.
+    dist = {d["calls"]: d["callers"] for d in rc["distribution"]}
+    assert dist == {"1": 1, "2": 1, "3": 1, "4": 0, "5+": 0}
+    assert sum(d["callers"] for d in rc["distribution"]) == rc["unique_callers"]
+    # Top repeat callers: only count >= 2, ordered by count desc.
+    assert rc["top_repeat_callers"] == [
+        {"call_id": "A", "count": 3},
+        {"call_id": "B", "count": 2},
+    ]
+
+
+def test_repeat_calls_no_call_id_column():
+    rc = classify_domain._repeat_calls([_rc_label(None), _rc_label(None)])
+    assert rc["total_calls"] == 2
+    assert rc["identified_calls"] == 0
+    assert rc["unique_callers"] == 0
+    assert rc["repeat_callers"] == 0
+    assert rc["repeat_caller_pct"] == 0.0
+    assert rc["repeat_call_pct"] == 0.0
+    assert rc["top_repeat_callers"] == []
+    assert sum(d["callers"] for d in rc["distribution"]) == 0
+
+
+def test_repeat_calls_five_plus_bucket_and_top_limit():
+    # 12 distinct callers each with >=2 calls; one with 6 calls lands in "5+".
+    labels = []
+    for i in range(12):
+        for _ in range(2):
+            labels.append(_rc_label(f"id{i:02d}"))
+    labels += [_rc_label("id00")] * 4  # id00 now has 6 calls total → "5+"
+    rc = classify_domain._repeat_calls(labels)
+    dist = {d["calls"]: d["callers"] for d in rc["distribution"]}
+    assert dist["5+"] == 1
+    assert dist["2"] == 11
+    # top_repeat_callers is capped at 10 and the 6-call caller ranks first.
+    assert len(rc["top_repeat_callers"]) == 10
+    assert rc["top_repeat_callers"][0] == {"call_id": "id00", "count": 6}
+
+
 # --- classify_batch (parsing / coercion / retry) ------------------------------
 
 def test_classify_batch_parses_and_coerces():

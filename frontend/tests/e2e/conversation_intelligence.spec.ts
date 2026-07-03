@@ -103,18 +103,32 @@ test('analyze conversations -> progress -> breakdowns + cross-tab + download', a
   await expect(summaryText).toBeVisible()
   await expect(summaryText).not.toBeEmpty()
 
-  // Outcome breakdown — Positive / Neutral / Negative rows.
+  // Outcome breakdown — Positive / Neutral / Negative rows. Scope to the table
+  // rows (the outcome chart below also renders these labels).
   const outcome = page.getByTestId('outcome-breakdown')
   await expect(outcome).toBeVisible()
-  await expect(outcome.getByText('Positive', { exact: true })).toBeVisible()
-  await expect(outcome.getByText('Neutral', { exact: true })).toBeVisible()
-  await expect(outcome.getByText('Negative', { exact: true })).toBeVisible()
+  const outcomeRows = page.getByTestId('outcome-rows')
+  await expect(outcomeRows.getByText('Positive', { exact: true })).toBeVisible()
+  await expect(outcomeRows.getByText('Neutral', { exact: true })).toBeVisible()
+  await expect(outcomeRows.getByText('Negative', { exact: true })).toBeVisible()
 
   // Cross-tab table with a header row.
   const crossTab = page.getByTestId('cross-tab')
   await expect(crossTab).toBeVisible()
   await expect(crossTab.getByText('Total', { exact: true })).toBeVisible()
   await expect(page.getByTestId('cross-tab-rows').locator('tr').first()).toBeVisible()
+
+  // A chart accompanies each analysis (intent, outcome, cross-tab).
+  await expect(page.getByTestId('intent-chart')).toBeVisible()
+  await expect(page.getByTestId('outcome-chart')).toBeVisible()
+  await expect(page.getByTestId('cross-tab-chart')).toBeVisible()
+
+  // Repeat-calls analysis. The fixture has a `call_id` column, so real stats +
+  // the distribution chart render (not the "no call identifier" note).
+  const repeat = page.getByTestId('repeat-calls')
+  await expect(repeat).toBeVisible()
+  await expect(page.getByTestId('repeat-unique-callers')).toBeVisible()
+  await expect(page.getByTestId('repeat-distribution-chart')).toBeVisible()
 
   // Download labelled CSV button is present and points at the labelled.csv endpoint.
   const download = page.getByTestId('download-labelled-csv')

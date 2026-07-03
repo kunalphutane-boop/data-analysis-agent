@@ -234,6 +234,62 @@ def _aggregate(labels: list[CallLabelRow], summaries: dict[str, str] | None = No
     }
 
 
+# Distribution buckets for calls-per-caller. Anything >= 5 collapses into "5+".
+_REPEAT_BUCKETS = ("1", "2", "3", "4", "5+")
+_TOP_REPEAT_LIMIT = 10
+
+
+def _bucket_key(count: int) -> str:
+    return str(count) if count <= 4 else "5+"
+
+
+def _repeat_calls(labels: list[CallLabelRow]) -> dict:
+    """Deterministic repeat-caller analysis from the stored `call_id` metadata.
+
+    A "repeat caller" is a `call_id` that appears on more than one row. Rows with a
+    blank/absent `call_id` are excluded from caller stats (they can't be attributed
+    to anyone) but still count toward `total_calls`. No Gemini calls — pure counting.
+    """
+    total = len(labels)
+    counts_by_id: dict[str, int] = {}
+    identified = 0
+    for lbl in labels:
+        cid = (lbl.call_id or "").strip()
+        if not cid:
+            continue
+        identified += 1
+        counts_by_id[cid] = counts_by_id.get(cid, 0) + 1
+
+    unique_callers = len(counts_by_id)
+    repeat_callers = sum(1 for c in counts_by_id.values() if c > 1)
+    repeat_calls_count = sum(c for c in counts_by_id.values() if c > 1)
+
+    buckets = {k: 0 for k in _REPEAT_BUCKETS}
+    for c in counts_by_id.values():
+        buckets[_bucket_key(c)] += 1
+    distribution = [{"calls": k, "callers": buckets[k]} for k in _REPEAT_BUCKETS]
+
+    top = sorted(counts_by_id.items(), key=lambda kv: (-kv[1], kv[0]))
+    top_repeat_callers = [
+        {"call_id": cid, "count": c} for cid, c in top if c > 1
+    ][:_TOP_REPEAT_LIMIT]
+
+    return {
+        "total_calls": total,
+        "identified_calls": identified,
+        "unique_callers": unique_callers,
+        "repeat_callers": repeat_callers,
+        "repeat_caller_pct": (
+            round(100.0 * repeat_callers / unique_callers, 1) if unique_callers else 0.0
+        ),
+        "repeat_call_pct": (
+            round(100.0 * repeat_calls_count / identified, 1) if identified else 0.0
+        ),
+        "distribution": distribution,
+        "top_repeat_callers": top_repeat_callers,
+    }
+
+
 def get_results(job_id: str) -> dict:
     with create_db_session() as session:
         job = session.get(ClassificationJobRow, job_id)
@@ -253,6 +309,7 @@ def get_results(job_id: str) -> dict:
             "intent_breakdown": agg["intent_breakdown"],
             "outcome_breakdown": agg["outcome_breakdown"],
             "cross_tab": agg["cross_tab"],
+            "repeat_calls": _repeat_calls(labels),
             "input_tokens": job.input_tokens,
             "output_tokens": job.output_tokens,
             "cost_usd": job.cost_usd,

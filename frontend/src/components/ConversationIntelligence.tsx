@@ -23,6 +23,12 @@ import {
   type Dataset,
   type IntentBreakdownRow,
 } from '@/lib/api'
+import {
+  BarChart,
+  OUTCOME_COLOR,
+  StackedBarChart,
+  type BarDatum,
+} from './charts'
 
 const BUSINESS_CONTEXT_HINT =
   "Describe your business so intents & outcomes are tailored — e.g. 'We are a lending " +
@@ -158,6 +164,19 @@ function IntentBreakdown({ results }: { results: ClassifyResults }) {
           ))}
         </tbody>
       </table>
+      <div className="mt-4">
+        <BarChart
+          testId="intent-chart"
+          data={[...results.intent_breakdown]
+            .sort((a, b) => b.count - a.count)
+            .map<BarDatum>((r) => ({
+              label: r.intent,
+              value: r.count,
+              valueLabel: `${r.count.toLocaleString()} · ${pct(r.pct)}`,
+              title: `${r.intent}: ${r.count.toLocaleString()} (${pct(r.pct)})`,
+            }))}
+        />
+      </div>
     </div>
   )
 }
@@ -198,6 +217,18 @@ function OutcomeBreakdown({ results }: { results: ClassifyResults }) {
           ))}
         </tbody>
       </table>
+      <div className="mt-4">
+        <BarChart
+          testId="outcome-chart"
+          data={rows.map<BarDatum>((r) => ({
+            label: r.outcome,
+            value: r.count,
+            color: OUTCOME_COLOR[r.outcome],
+            valueLabel: `${r.count.toLocaleString()} · ${pct(r.pct)}`,
+            title: `${r.outcome}: ${r.count.toLocaleString()} (${pct(r.pct)})`,
+          }))}
+        />
+      </div>
     </div>
   )
 }
@@ -230,6 +261,132 @@ function CrossTab({ results }: { results: ClassifyResults }) {
           ))}
         </tbody>
       </table>
+      <div className="mt-4">
+        <StackedBarChart
+          testId="cross-tab-chart"
+          legend={[
+            { name: 'Positive', color: OUTCOME_COLOR.Positive },
+            { name: 'Neutral', color: OUTCOME_COLOR.Neutral },
+            { name: 'Negative', color: OUTCOME_COLOR.Negative },
+          ]}
+          data={[...results.cross_tab]
+            .sort((a, b) => b.total - a.total)
+            .map((r) => ({
+              label: r.intent,
+              segments: [
+                { name: 'Positive', value: r.positive, color: OUTCOME_COLOR.Positive },
+                { name: 'Neutral', value: r.neutral, color: OUTCOME_COLOR.Neutral },
+                { name: 'Negative', value: r.negative, color: OUTCOME_COLOR.Negative },
+              ],
+            }))}
+        />
+      </div>
+    </div>
+  )
+}
+
+function StatTile({
+  label,
+  value,
+  testId,
+}: {
+  label: string
+  value: string
+  testId?: string
+}) {
+  return (
+    <div
+      data-testid={testId}
+      className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2"
+    >
+      <div className="text-lg font-semibold tabular-nums text-gray-900">{value}</div>
+      <div className="text-xs text-gray-500">{label}</div>
+    </div>
+  )
+}
+
+function RepeatCallsPanel({ results }: { results: ClassifyResults }) {
+  const rc = results.repeat_calls
+  if (!rc || rc.identified_calls === 0) {
+    return (
+      <div data-testid="repeat-calls">
+        <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+          Repeat calls
+        </h4>
+        <p
+          data-testid="repeat-calls-empty"
+          className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-4 text-xs text-gray-500"
+        >
+          No call identifier column was detected in this dataset, so repeat callers
+          can&apos;t be attributed.
+        </p>
+      </div>
+    )
+  }
+  return (
+    <div data-testid="repeat-calls" className="space-y-4">
+      <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+        Repeat calls
+      </h4>
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatTile
+          testId="repeat-unique-callers"
+          label="Unique callers"
+          value={rc.unique_callers.toLocaleString()}
+        />
+        <StatTile
+          testId="repeat-repeat-callers"
+          label="Repeat callers"
+          value={rc.repeat_callers.toLocaleString()}
+        />
+        <StatTile
+          testId="repeat-caller-pct"
+          label="Callers who repeat"
+          value={pct(rc.repeat_caller_pct)}
+        />
+        <StatTile
+          testId="repeat-call-pct"
+          label="Calls from repeaters"
+          value={pct(rc.repeat_call_pct)}
+        />
+      </div>
+
+      <div>
+        <p className="mb-2 text-xs text-gray-400">Callers by number of calls</p>
+        <BarChart
+          testId="repeat-distribution-chart"
+          data={rc.distribution.map<BarDatum>((d) => ({
+            label: `${d.calls} call${d.calls === '1' ? '' : 's'}`,
+            value: d.callers,
+            title: `${d.callers.toLocaleString()} caller(s) made ${d.calls} call(s)`,
+          }))}
+        />
+      </div>
+
+      {rc.top_repeat_callers.length > 0 && (
+        <div>
+          <p className="mb-2 text-xs text-gray-400">Top repeat callers</p>
+          <table className="w-full border-collapse text-left text-sm">
+            <thead>
+              <tr className="border-b border-gray-200 text-xs uppercase tracking-wide text-gray-400">
+                <th className="py-2 pr-4 font-medium">Call ID</th>
+                <th className="py-2 pr-4 font-medium">Calls</th>
+              </tr>
+            </thead>
+            <tbody data-testid="top-repeat-rows">
+              {rc.top_repeat_callers.map((c) => (
+                <tr key={c.call_id} className="border-b border-gray-100 last:border-0">
+                  <td className="py-2 pr-4 font-mono text-xs text-gray-700">{c.call_id}</td>
+                  <td className="py-2 pr-4 tabular-nums text-gray-700">
+                    {c.count.toLocaleString()}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }
@@ -254,6 +411,7 @@ function ResultsView({ jobId, results }: { jobId: string; results: ClassifyResul
       <IntentBreakdown results={results} />
       <OutcomeBreakdown results={results} />
       <CrossTab results={results} />
+      <RepeatCallsPanel results={results} />
 
       <div className="flex flex-wrap items-center gap-3">
         <span

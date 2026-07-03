@@ -153,10 +153,16 @@ Routers live in `src/api/classify.py`, registered in `src/api/__init__.py`. All 
                          {"outcome": "Negative", "count": 3132, "pct": 25.4}],
   "cross_tab": [{"intent": "Verification/Registration",
                  "positive": 40, "neutral": 60, "negative": 233, "total": 333}],
+  "repeat_calls": {"total_calls": 12342, "identified_calls": 12342, "unique_callers": 9010,
+                   "repeat_callers": 1502, "repeat_caller_pct": 16.7, "repeat_call_pct": 27.0,
+                   "distribution": [{"calls": "1", "callers": 7508}, {"calls": "2", "callers": 900},
+                                    {"calls": "3", "callers": 400}, {"calls": "4", "callers": 120},
+                                    {"calls": "5+", "callers": 82}],
+                   "top_repeat_callers": [{"call_id": "9989xxxxxx", "count": 7}]},
   "input_tokens": 540221, "output_tokens": 41233, "cost_usd": 0.191
 }, "error": null}
 ```
-`intent_breakdown` and `outcome_breakdown` `pct` fields each sum to 100 (±0.1). In each `cross_tab` row `positive + neutral + negative == total`. Each `intent_breakdown` row also carries a `summary` — a concise (~2-4 sentence) narrative for that intent (what customers call about, how the calls resolve given the outcome mix, notable patterns), generated once per intent by Gemini and cached with the run (same dataset+column+context resumes and returns the cached summaries with no new Gemini calls; a changed `business_context` refreshes them). `summary` is `""` while a run is still classifying / before summaries are generated.
+`intent_breakdown` and `outcome_breakdown` `pct` fields each sum to 100 (±0.1). In each `cross_tab` row `positive + neutral + negative == total`. `repeat_calls` is a deterministic (no-LLM) repeat-caller analysis derived from the stored per-call `call_id`: `unique_callers` distinct ids, `repeat_callers` seen on >1 row, its `distribution` buckets callers by call count (`1`/`2`/`3`/`4`/`5+`) and sums to `unique_callers`, and `top_repeat_callers` lists up to 10 ids with `count ≥ 2`. When the dataset has no call-id column, `identified_calls == 0` and the caller stats are 0. Each `intent_breakdown` row also carries a `summary` — a concise (~2-4 sentence) narrative for that intent (what customers call about, how the calls resolve given the outcome mix, notable patterns), generated once per intent by Gemini and cached with the run (same dataset+column+context resumes and returns the cached summaries with no new Gemini calls; a changed `business_context` refreshes them). `summary` is `""` while a run is still classifying / before summaries are generated.
 **Errors:** 404 `not_found`.
 
 ### `GET /classify/jobs/{job_id}/labelled.csv`
