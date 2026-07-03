@@ -1,0 +1,9 @@
+call_id,Conversation Log
+C001,"[CUSTOMER] Hi, I want to enquire about a personal loan and the interest rate. || [AGENT] Sure, I can help you with our personal loan options and current rates. || [CUSTOMER] Great, thank you so much, that was very helpful."
+C002,"[CUSTOMER] My EMI payment failed and I have been charged a late fee, this is ridiculous. || [AGENT] I understand your frustration. || [CUSTOMER] This is the third time, I am very upset and want this resolved now."
+C003,"[CUSTOMER] Can you tell me my current account balance and email me the statement? || [AGENT] Sure, your balance is shown and I will send the statement. || [CUSTOMER] Perfect, thanks a lot."
+C004,"[CUSTOMER] I am trying to complete my registration but the verification OTP is not arriving. || [AGENT] Let me check your registered mobile number. || [CUSTOMER] It still is not working, this is frustrating and a waste of my time."
+C005,"[CUSTOMER] What are your branch timings today and are you open on Saturday? || [AGENT] We are open 10 to 5, closed Sunday. || [CUSTOMER] Okay, noted."
+C006,""
+C001,"[CUSTOMER] I called earlier about the loan, I want to proceed with the application now. || [AGENT] Great, let me start your application. || [CUSTOMER] Wonderful, thank you for the quick help."
+C007,"[CUSTOMER] I want to lodge a complaint, nobody has resolved my issue for two weeks. || [AGENT] I am sorry for the delay, let me escalate this. || [CUSTOMER] I am extremely disappointed with the service."

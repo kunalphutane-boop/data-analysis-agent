@@ -53,6 +53,24 @@ Web single-page app. Next.js 15 + React 19, statically exported and served by Fa
 
 **Actions available (P1):** upload a CSV; ask a question; expand/collapse code; refine + re-ask on clarify.
 
+### Screen: Conversation Intelligence (Phase 4)
+
+**Purpose:** classify every call in a loaded transcript dataset by Intent + Outcome, watch progress, read the breakdowns + cross-tab, and download the labelled CSV. Files: `frontend/src/components/ConversationIntelligence.tsx` (+ progress/results subcomponents), wired from `frontend/src/app/page.tsx`, client in `frontend/src/lib/api.ts`. Calls the Phase 4 endpoints in [`api.md`](api.md).
+
+**REAL elements (Phase 4):**
+- **Analyze conversations** action on a loaded dataset, revealing a **transcript-column picker** populated from the dataset profile columns and **auto-defaulted to a column literally named `"Conversation Log"`** if present. A **Start** button calls `POST /datasets/{id}/classify` with `{text_column}`.
+- **Progress bar** — polls `GET /classify/jobs/{job_id}`; shows `classified_calls / total_calls`, percent, elapsed seconds, and the running `cost_usd` while `status` is `deriving_taxonomy`/`classifying`.
+- **Results panel** (on `done`, from `GET /classify/jobs/{job_id}/results`):
+  - **Intent breakdown** — table/bars of `{intent, count, pct}`.
+  - **Outcome breakdown** — Positive / Neutral / Negative `{count, pct}`.
+  - **Outcome-by-intent cross-tab** — a matrix table: one row per intent, columns Positive / Neutral / Negative / Total (e.g. "Verification calls 70% Negative").
+  - **Download labelled CSV** button — hits `GET /classify/jobs/{job_id}/labelled.csv` (this also **wires the previously-stubbed Export button** for this labelled CSV).
+- **Resume:** re-running Analyze on the same dataset/column completes near-instantly (idempotent) — the UI simply shows the completed results again.
+
+Styling matches the existing workspace. Charts area and Sessions sidebar remain **stubbed**.
+
+**Actions available (Phase 4):** pick the transcript column; start classification; watch progress; view breakdowns + cross-tab; download the labelled CSV.
+
 ## Error & Loading States (REAL elements)
 
 - **Upload:** empty → dropzone with hint; loading → spinner + "Profiling…"; error → inline message from `error.message` (e.g. "Not a valid CSV"); success → profile panel.

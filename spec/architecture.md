@@ -50,7 +50,7 @@ A single technical user runs this tool on their own machine. A FastAPI server on
 | **API** (`src/api/*`) | FastAPI routers; request validation; `ok(data)` / `api_error(code, message, status)` envelopes; static mount of the Next.js export at `/app/`. |
 | **Domain** (`src/domain/*`) | Orchestrates a use-case: create session, upload+profile a dataset, run an ask. Owns DB transactions; calls analysis + graph layers. Keeps API thin. |
 | **Agent graph** (`src/graph/*`) | LangGraph loop: plan → generate_code → execute_code → inspect → answer, with bounded error-fix retry and clarify-on-ambiguity. See [`agent.md`](agent.md). |
-| **Analysis** (`src/analysis/*`) | `loader` (read CSV → DataFrame), `profiler` (schema/types/missing/ranges + sample), `sandbox` (restricted local code execution), `storage` (files under `data/uploads/`). No LLM here. |
+| **Analysis** (`src/analysis/*`) | `loader` (read CSV → DataFrame), `profiler` (schema/types/missing/ranges + sample), `sandbox` (restricted local code execution), `storage` (files under `data/uploads/`), and `classifier` (Phase 4 — async batched transcript classification via Gemini; the **only** analysis module that calls the LLM and reaches the network). |
 | **LLM** (`src/llm/*`) | Provider-agnostic `LLMClient`; Gemini provider; token-usage capture; `pricing.py` cost table. |
 | **Persistence** (`src/db/*`) | SQLAlchemy 2.0 models + session factory over SQLite. See [`data.md`](data.md). |
 | **Observability** (`src/observability/*`) | Structured (structlog) request/response + per-node logging: prompt, output, latency, tokens, cost, errors. |
@@ -73,13 +73,25 @@ Generated pandas code is **never** trusted; it runs locally in a restricted `exe
 - **Error capture → retry loop:** any exception is caught; the exception type + message + a trimmed traceback are returned as `execution_error`. The `inspect` node feeds that error back into `generate_code` (see [`agent.md`](agent.md)) so Gemini can fix the code, up to `max_retries` (default 3). Persistent failure returns a clear failure answer, never a guessed number.
 - **Output shape:** `{ok: bool, result: Any, result_repr: str, stdout: str, error: str | None}`. `result_repr` is a truncated, display-safe string of `result` used to build the answer prompt.
 
+## Conversation Intelligence classifier (Phase 4, `src/analysis/classifier.py`)
+
+A **plain async service**, deliberately kept **out of the LangGraph agent graph** — it is a batch/offline classification job, not an interactive plan→code→execute→answer turn, and forcing it into the ask graph would add no value. The domain orchestrator `src/domain/classify.py` starts it as an in-process background async task and the client polls `/classify/jobs/{job_id}` for progress. See the rationale in [`agent.md`](agent.md).
+
+- **Flow:** load the dataset DataFrame from disk → derive a fixed Intent taxonomy from a sample of transcripts (once per job, stored on `classification_jobs.taxonomy_json`, reused on resume) → skip rows already in `call_labels` (idempotent resume) → classify the remaining transcripts in **batches** (`AGENT_CLASSIFY_BATCH_SIZE`, default 15) under **bounded concurrency** (`AGENT_CLASSIFY_CONCURRENCY`, default 4, via an `asyncio.Semaphore`) with the fast low-cost `AGENT_CLASSIFY_MODEL` (default `gemini-2.5-flash-lite`) → persist `call_labels` incrementally and bump `classification_jobs.classified_calls` / tokens / cost per batch → aggregate the breakdowns + cross-tab at read time.
+- **Truncation:** each transcript is trimmed to `AGENT_TRANSCRIPT_MAX_CHARS` (default 6000) before sending to respect token limits.
+- **Robustness:** empty transcript → labelled locally (`No transcript`/`Neutral`), **no** Gemini call; malformed batch JSON → retry once, then mark that batch's rows `Unclassified`/`Neutral` rather than failing the whole run.
+- **Cost/observability:** reuses `src/llm/pricing.py` + the Gemini provider's `call_with_usage`, and the same structlog request/response logging (model, tokens, latency, batch index, error) as the rest of the system.
+- **Sandbox untouched:** this service reaches the network intentionally; the no-network pandas sandbox and the ask path are unchanged.
+
 ## Data-privacy boundary
 
-The LLM sees **only** metadata, never the raw dataset:
+The LLM sees **only** metadata, never the raw dataset — **except** for the Phase 4 Conversation Intelligence feature (below):
 
 - **Sent to Gemini:** the schema (column names + inferred dtypes), aggregate profile stats (missing %, numeric ranges), and a small sample of rows (default 5, `AGENT_SAMPLE_ROWS`). The user's question. On retry, the prior code + the execution error.
 - **Never sent:** the full DataFrame, the raw file, or any row beyond the sample. All computation runs locally in the sandbox against the full `df`; only the computed `result_repr` (already an aggregate/derived value in normal use) is sent to write the final answer.
 - **File storage:** raw uploads live under `data/uploads/` on the local disk and are never transmitted. SQLite (`AGENT_DATABASE_URL`) stores metadata, profiles, and message history locally.
+
+**Scoped Phase 4 exception (Conversation Intelligence):** the classifier **does** send transcript **text** to Gemini (truncated to `AGENT_TRANSCRIPT_MAX_CHARS`), because reading each call is the whole point of the feature — the user's explicit, informed choice ("LLM reads every call — accurate"). This exception is confined to the classification job: the ask/sandbox path and its "raw rows stay local" guarantee are unchanged. Only derived `intent`/`outcome` labels are persisted (`call_labels`), never transcript text in the DB.
 
 ## Token & cost capture
 
@@ -91,7 +103,7 @@ The LLM sees **only** metadata, never the raw dataset:
 
 | Dependency | Purpose | Failure Mode |
 |------------|---------|--------------|
-| Google Gemini API | Plan, generate pandas, write the answer | On error/rate-limit: provider retries with backoff, then the run finalizes with a clear error surfaced to the UI (no stub path — tests use the real key from `.env`). |
+| Google Gemini API | Plan, generate pandas, write the answer; **(Phase 4)** derive the intent taxonomy + classify transcript batches | On error/rate-limit: provider retries with backoff, then the run finalizes with a clear error surfaced to the UI (no stub path — tests use the real key from `.env`). Phase 4: a failed batch is marked `Unclassified` and the job continues. |
 | pandas / numpy | Local profiling + sandboxed computation | Code error → captured and fed into the bounded retry loop; profiling error → 400 on upload. |
 | SQLite (via SQLAlchemy) | Local metadata/history store | Connection/migration failure → server startup fails loudly. |
 | Local filesystem (`data/uploads/`) | Raw file storage | Write failure → 500 on upload. |
@@ -107,6 +119,8 @@ The LLM sees **only** metadata, never the raw dataset:
 - **Database + ORM:** SQLite + SQLAlchemy 2.0 (Mapped style), Alembic migrations. `AGENT_DATABASE_URL` (default `sqlite:///./data/agent.db`).
 - **Frontend:** Next.js 15 + React 19, static export served by FastAPI at `/app/`.
 - **Dependency management:** uv + `pyproject.toml` (backend); pnpm (frontend).
+
+**Phase 4 settings** (all `AGENT_`-prefixed in `src/config/settings.py`, documented in `.env.example`, with the defaults below): `AGENT_CLASSIFY_MODEL` (default `gemini-2.5-flash-lite`), `AGENT_CLASSIFY_BATCH_SIZE` (default `15`), `AGENT_CLASSIFY_CONCURRENCY` (default `4`), `AGENT_TRANSCRIPT_MAX_CHARS` (default `6000`), `AGENT_TAXONOMY_SAMPLE_SIZE` (default `100`). The classification model is independent of `AGENT_LLM_MODEL` so the cheap flash-lite tier can be used for the 12k-row job without changing the ask-path model.
 
 | Key library | Version | Purpose |
 |-------------|---------|---------|

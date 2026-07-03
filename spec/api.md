@@ -95,6 +95,62 @@ These field names (`answer`, `generated_code`, `steps`, `input_tokens`, `output_
 
 ---
 
+## Phase 4 — Conversation Intelligence endpoints (REAL in Phase 4)
+
+Routers live in `src/api/classify.py`, registered in `src/api/__init__.py`. All use the same `ok(data)` / `api_error(code, message, status)` envelope. The classify job runs as an in-process background async task; the client polls the progress endpoint. See [`capabilities/conversation_intelligence.md`](capabilities/conversation_intelligence.md) and [`agent.md`](agent.md).
+
+### `POST /datasets/{id}/classify`
+**Purpose:** start a Conversation Intelligence job for a dataset's transcript column (idempotent/resumable — reuses existing labels).
+**Request:** `{"text_column": "Conversation Log"}` (the transcript column; the frontend auto-detects a `"Conversation Log"` column and defaults the picker to it).
+**Response (200):**
+```json
+{"data": {"job_id": "uuid", "dataset_id": "uuid", "text_column": "Conversation Log",
+          "status": "pending", "total_calls": 12342, "classified_calls": 0}, "error": null}
+```
+**Errors:** 404 `not_found` (unknown dataset), 400 `bad_column` (column absent from the dataset schema), 500.
+
+### `GET /classify/jobs/{job_id}`
+**Purpose:** poll progress (drives the progress bar + running cost).
+**Response (200):**
+```json
+{"data": {
+  "job_id": "uuid", "status": "classifying",
+  "total_calls": 12342, "classified_calls": 4800,
+  "percent": 38.9, "elapsed_seconds": 72.4,
+  "input_tokens": 210334, "output_tokens": 18422, "cost_usd": 0.0731,
+  "error": null
+}, "error": null}
+```
+`status` ∈ `pending` | `deriving_taxonomy` | `classifying` | `done` | `error`.
+**Errors:** 404 `not_found`.
+
+### `GET /classify/jobs/{job_id}/results`
+**Purpose:** fetch the aggregated results (available while `classifying`; final at `done`).
+**Response (200):**
+```json
+{"data": {
+  "job_id": "uuid", "status": "done", "total_calls": 12342,
+  "taxonomy": ["Loan enquiry", "EMI/Payment", "Account balance/Statement",
+               "Verification/Registration", "Branch/Timing", "Complaint/Escalation", "Other/Unclear"],
+  "intent_breakdown": [{"intent": "Loan enquiry", "count": 3120, "pct": 25.3}],
+  "outcome_breakdown": [{"outcome": "Positive", "count": 5010, "pct": 40.6},
+                         {"outcome": "Neutral", "count": 4200, "pct": 34.0},
+                         {"outcome": "Negative", "count": 3132, "pct": 25.4}],
+  "cross_tab": [{"intent": "Verification/Registration",
+                 "positive": 40, "neutral": 60, "negative": 233, "total": 333}],
+  "input_tokens": 540221, "output_tokens": 41233, "cost_usd": 0.191
+}, "error": null}
+```
+`intent_breakdown` and `outcome_breakdown` `pct` fields each sum to 100 (±0.1). In each `cross_tab` row `positive + neutral + negative == total`.
+**Errors:** 404 `not_found`.
+
+### `GET /classify/jobs/{job_id}/labelled.csv`
+**Purpose:** download the full labelled dataset — all original columns plus `Intent` and `Outcome`, one row per input row in input order.
+**Response (200):** `text/csv` streamed (`Content-Disposition: attachment; filename="<original>_labelled.csv"`). This is **not** enveloped — it is a raw CSV body.
+**Errors:** 404 `not_found`, 409 `not_ready` (job not yet `done`).
+
+---
+
 ## Phase 2 / 3 — FUTURE endpoints (labelled, not built in P1)
 
 | Endpoint | Phase | Purpose |

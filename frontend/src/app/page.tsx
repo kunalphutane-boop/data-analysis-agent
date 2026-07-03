@@ -14,6 +14,7 @@ import { UploadDropzone } from '@/components/UploadDropzone'
 import { ProfilePanel } from '@/components/ProfilePanel'
 import { QuestionBox } from '@/components/QuestionBox'
 import { AnswerDisplay } from '@/components/AnswerDisplay'
+import { ConversationIntelligence } from '@/components/ConversationIntelligence'
 import { StubPanel } from '@/components/Stub'
 
 export default function Home() {
@@ -98,6 +99,12 @@ export default function Home() {
           />
 
           <ProfilePanel dataset={dataset} />
+
+          {/* Conversation Intelligence (Phase 4) — shown on a loaded dataset.
+              Keyed by dataset id so switching datasets resets the job state. */}
+          {dataset && (
+            <ConversationIntelligence key={dataset.id} dataset={dataset} />
+          )}
 
           {/* Data-quality flags STUB */}
           <StubPanel title="Data-quality flags" testId="quality-flags-stub">

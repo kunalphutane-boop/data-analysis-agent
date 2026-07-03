@@ -68,6 +68,47 @@ One row per ask (a conversation turn). Stores the question, the exact executed c
 
 **P1 populates:** all columns except future-only ones. **P2 uses:** `created_at` for daily cost, ordered reads for conversation memory.
 
+### Entity: `classification_jobs` (Phase 4)
+
+A background Conversation Intelligence run over one dataset's transcript column. One row per classify job. Added in migration `alembic/versions/0003_conversation_intelligence.py` (down_revision `0002`).
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| id | str (uuid) PK | yes | Job id (returned to the client and polled) |
+| dataset_id | str FK→datasets.id | yes | Dataset being classified |
+| session_id | str FK→sessions.id | yes | Owning session (from the dataset) |
+| text_column | str | yes | The transcript column being read (e.g. `Conversation Log`) |
+| status | str | yes | `pending` → `deriving_taxonomy` → `classifying` → `done` \| `error` |
+| total_calls | int | yes | Rows to classify |
+| classified_calls | int | yes | Rows labelled so far (drives the progress bar) |
+| taxonomy_json | JSON (Text) | no | The derived fixed Intent list, reused on resume |
+| input_tokens | int | yes | Prompt tokens accumulated across taxonomy + all batches (default 0) |
+| output_tokens | int | yes | Completion tokens accumulated (default 0) |
+| cost_usd | float | yes | Running cost via `src/llm/pricing.py` (default 0.0) |
+| error | str \| null | no | Failure text if the job errored |
+| started_at | datetime (UTC) | yes | Job start (used for elapsed) |
+| updated_at | datetime (UTC) | yes | Bumped as each batch completes |
+
+### Entity: `call_labels` (Phase 4)
+
+One row per classified call. Keyed for idempotent resume by `(dataset_id, text_column, row_index)` (unique constraint), so a re-run skips already-labelled rows.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| id | str (uuid) PK | yes | Primary key |
+| job_id | str FK→classification_jobs.id | yes | Job that last wrote this label |
+| dataset_id | str FK→datasets.id | yes | Dataset (part of the idempotency key) |
+| text_column | str | yes | Transcript column classified (part of the idempotency key) |
+| row_index | int | yes | 0-based row position in the dataset (the stable per-call key) |
+| call_id | str \| null | no | The dataset's own call id if present (metadata only; may repeat across rows) |
+| intent | str | yes | Intent from the fixed taxonomy, `No transcript`, or `Unclassified` |
+| outcome | str | yes | `Positive` \| `Neutral` \| `Negative` |
+| created_at | datetime (UTC) | yes | Label time |
+
+**Unique constraint:** `(dataset_id, text_column, row_index)`. **Index:** `(dataset_id, text_column)` for the results aggregation + resume lookup.
+
+> **Assumed:** each **row** is labelled once by its `row_index`; a repeated `call_id` across rows is stored as metadata but does not collapse rows (every row gets its own label). Intent for empty transcripts is `No transcript`; malformed/failed batches fall back to `Unclassified` with `Outcome="Neutral"` so outcome is always in `{Positive,Neutral,Negative}`.
+
 ### Concept: `annotations` (Phase 2)
 
 User notes on a dataset column (e.g. "revenue is net of refunds") that enrich planning/quality flags. Introduced in Phase 2 as table `annotations` (`id`, `dataset_id` FK, `column_name`, `note`, `created_at`) via a Phase 2 migration (`0003_*`). Not created in Phase 1.
@@ -80,6 +121,7 @@ User notes on a dataset column (e.g. "revenue is net of refunds") that enrich pl
 - `sessions 1 ──< messages` (a session has many turns).
 - `datasets 1 ──< messages` (each ask targets one dataset).
 - `datasets 1 ──< annotations` (Phase 2).
+- `datasets 1 ──< classification_jobs` (Phase 4); `classification_jobs 1 ──< call_labels`; `datasets 1 ──< call_labels` (Phase 4).
 
 ---
 
@@ -91,4 +133,4 @@ User notes on a dataset column (e.g. "revenue is net of refunds") that enrich pl
 
 ## Sensitive Data
 
-The user's raw data never enters the DB — only schema, aggregate profile stats, and a small sample (default 5 rows) inside `profile_json`. Raw files stay on the local disk under `data/uploads/`. No auth/PII of third parties; the tool is bound to `localhost` for one user. See the privacy boundary in [`architecture.md`](architecture.md).
+The user's raw data never enters the DB — only schema, aggregate profile stats, and a small sample (default 5 rows) inside `profile_json`. **Phase 4 exception:** `call_labels` stores derived `intent`/`outcome` labels (not transcript text) in the DB; the raw transcripts stay on disk under `data/uploads/`, but transcript **text** is sent to Gemini for classification — the user's explicit, scoped choice for that feature (see [`architecture.md`](architecture.md)). Raw files stay on the local disk under `data/uploads/`. No auth/PII of third parties; the tool is bound to `localhost` for one user. See the privacy boundary in [`architecture.md`](architecture.md).

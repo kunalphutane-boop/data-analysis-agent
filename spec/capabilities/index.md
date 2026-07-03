@@ -15,6 +15,7 @@ One file per discrete capability. Phase mapping matches [`roadmap.md`](../roadma
 | 3 | Multi-dataset (files, joins, folders) | [multi_dataset.md](multi_dataset.md) |
 | 3 | Data exports (cleaned CSV, chart images) | [data_exports.md](data_exports.md) |
 | 3 | Report generation | [document_generation.md](document_generation.md) |
+| 4 | Conversation Intelligence (per-call Intent + Outcome classification) | [conversation_intelligence.md](conversation_intelligence.md) |
 
 ## How to Add a New Capability
 

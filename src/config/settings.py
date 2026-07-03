@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     sandbox_timeout_seconds: int = Field(default=15) # wall-clock limit for generated code
     max_retries: int = Field(default=3)              # bounded error-fix retries
 
+    # Conversation Intelligence (Phase 4) classifier tuning
+    classify_model: str = Field(default="gemini-2.5-flash-lite")  # fast, low-cost model
+    classify_batch_size: int = Field(default=15)     # transcripts per Gemini request
+    classify_concurrency: int = Field(default=4)     # bounded concurrent batches
+    transcript_max_chars: int = Field(default=6000)  # per-transcript truncation
+    taxonomy_sample_size: int = Field(default=100)   # transcripts sampled to derive taxonomy
+
 
 _settings: Settings | None = None
 

@@ -124,6 +124,10 @@ Reads: `error`. Writes: `answer` (clear failure message), `steps` marked failed.
 
 ---
 
+## Out of graph: Conversation Intelligence classifier (Phase 4)
+
+The Phase 4 [conversation_intelligence](capabilities/conversation_intelligence.md) capability does **not** run through this LangGraph agent. It is a **plain async batch service** (`src/analysis/classifier.py`, orchestrated by `src/domain/classify.py`) — a fan-out classification job over thousands of transcripts, not an interactive plan→code→execute→answer turn. It has no conditional branches, no retry-into-codegen loop, and no clarify path; its only control flow is batching + bounded concurrency + a once-per-job taxonomy-derivation step. Forcing it into `StateGraph` would add ceremony with no benefit, so it is deliberately kept separate and started as an in-process background task behind the `/classify` endpoints. It reuses the same Gemini client (`call_with_usage`), `src/llm/pricing.py`, and structlog observability as the graph. See [`architecture.md`](architecture.md) for the flow. The ask graph below is unchanged.
+
 ## Graph / Flow Topology
 
 ```

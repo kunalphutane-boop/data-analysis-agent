@@ -1,0 +1,59 @@
+# Capability: Conversation Intelligence (per-call Intent + Outcome classification)
+
+## What It Does
+Reads every call's free-text transcript in a call-center dataset with Gemini and attaches two labels per call — an **Intent** (from a data-driven, fixed taxonomy) and an **Outcome** (exactly one of Positive / Neutral / Negative) — then produces an intent breakdown, an outcome breakdown, an outcome-by-intent cross-tab, and a downloadable labelled CSV. It runs as a resumable background job with live progress and running token/cost totals.
+
+> **Deliberate privacy exception (scoped):** unlike the ask/sandbox path (which keeps raw rows local and sends only schema + a small sample), this capability **sends transcript text to Gemini** — the user's explicit, informed choice for this feature ("LLM reads every call — accurate"). The ask/sandbox path is unchanged and remains local-only. See the privacy boundary note in [`architecture.md`](../architecture.md).
+
+## Inputs
+| Input | Type | Source | Required |
+|-------|------|--------|----------|
+| dataset_id | uuid | `POST /datasets/{id}/classify` (path) | yes |
+| text_column | str | `POST /datasets/{id}/classify` body — the transcript column (auto-detected default: a column literally named `"Conversation Log"` if present) | yes |
+| session_id | uuid | resolved from the dataset | derived |
+| transcripts | derived | the dataset DataFrame loaded from `data/uploads/` | yes |
+
+## Outputs
+| Output | Type | Destination |
+|--------|------|-------------|
+| job_id | uuid | `POST /datasets/{id}/classify` response + `classification_jobs.id` |
+| progress | `{status, total_calls, classified_calls, percent, elapsed_seconds, input_tokens, output_tokens, cost_usd}` | `GET /classify/jobs/{job_id}` (polled for the progress bar) |
+| per-call labels | rows of `{row_index, call_id, intent, outcome}` | `call_labels` table |
+| intent_breakdown | `[{intent, count, pct}]` (sums to 100%) | `GET /classify/jobs/{job_id}/results` |
+| outcome_breakdown | `[{outcome, count, pct}]` (sums to 100%) | `GET /classify/jobs/{job_id}/results` |
+| cross_tab | `[{intent, positive, neutral, negative, total}]` (outcome distribution per intent) | `GET /classify/jobs/{job_id}/results` |
+| taxonomy | `[str]` (the fixed intent list) | `classification_jobs.taxonomy_json` + results payload |
+| labelled CSV | text/csv (all original columns + `Intent` + `Outcome`) | `GET /classify/jobs/{job_id}/labelled.csv` |
+
+## External Calls
+| System | Operation | On Failure |
+|--------|-----------|------------|
+| Gemini | derive taxonomy from a sample of transcripts (once per job); classify each batch of transcripts → `{intent, outcome}` per call | batch JSON malformed → retry once, then mark that batch's rows `Intent="Unclassified", Outcome="Neutral"` (never fail the whole run); transient API error → provider retry/backoff, then mark the batch unclassified and continue |
+| SQLite | upsert `call_labels`; update `classification_jobs` progress/tokens/cost | 500; job row marked `status="error"` with `error` set |
+| Local filesystem (`data/uploads/`) | read the dataset CSV for transcripts + CSV export | 404 if the dataset file is missing |
+
+## Business Rules
+- **Fixed, data-driven taxonomy.** Before classifying, derive a stable Intent taxonomy from a sample of `AGENT_TAXONOMY_SAMPLE_SIZE` transcripts (default 100), seeded/fallback to the expected lending-call categories: `Loan enquiry`, `EMI/Payment`, `Account balance/Statement`, `Verification/Registration`, `Branch/Timing`, `Complaint/Escalation`, `Other/Unclear`. Every call is then classified into that **fixed set** so labels stay consistent. The taxonomy is derived once per job and stored on `classification_jobs.taxonomy_json`; a resumed run reuses it.
+- **Outcome is exactly one of** `Positive` / `Neutral` / `Negative`. Any value the model returns outside this set is coerced to `Neutral`.
+- **Empty / blank transcript** → **no LLM call**; `Intent="No transcript"`, `Outcome="Neutral"`.
+- **Batching & efficiency (12k+ rows):** transcripts are sent in batches of `AGENT_CLASSIFY_BATCH_SIZE` calls per Gemini request (default 15) with bounded concurrency `AGENT_CLASSIFY_CONCURRENCY` (default 4), using the fast low-cost `AGENT_CLASSIFY_MODEL` (default `gemini-2.5-flash-lite`). Each transcript is truncated to `AGENT_TRANSCRIPT_MAX_CHARS` (default 6000) before sending.
+- **Idempotent / resumable.** Labels are keyed by `(dataset_id, text_column, row_index)` with a unique constraint. A re-run (same dataset + column) skips already-labelled rows and only classifies the remainder — no re-classification, no duplicate Gemini calls. A repeated `call_id` across rows is fine: each **row** is labelled once by its `row_index` (the stable key); `call_id` is stored as metadata only.
+- **Progress.** The job reports `classified_calls / total_calls`, percent, and elapsed seconds, plus a running `input_tokens` / `output_tokens` / `cost_usd` total, updated in the DB as each batch completes so the UI polls a live progress bar.
+- **Cost accounting** reuses `src/llm/pricing.py` (`cost_usd(model, in, out)`); tokens come from the Gemini provider's `call_with_usage`.
+- **Runs outside the sandbox.** This job legitimately needs network to reach Gemini; it runs as a plain async service (see [`agent.md`](../agent.md)), NOT inside the no-network pandas sandbox, which is left untouched.
+
+## Error Cases
+- Unknown dataset → 404 `not_found`.
+- `text_column` absent from the dataset schema → 400 `bad_column`.
+- Malformed batch JSON after one retry → those rows `Unclassified` (Outcome `Neutral`), run continues.
+- Gemini unavailable after backoff for a batch → those rows `Unclassified`, run continues; job still reaches `done`.
+- DB/file failure → job `status="error"`, `error` set, surfaced via the progress endpoint.
+
+## Success Criteria
+- [ ] Given a synthetic transcript CSV (a handful of rows with recognizable intents + clear positive/negative tone + one EMPTY transcript + one REPEATED `call_id`), **every row** receives an `intent` and an `outcome` in `{Positive, Neutral, Negative}` (real Gemini).
+- [ ] The empty-transcript row is labelled `Intent="No transcript", Outcome="Neutral"` with **no** Gemini call made for it.
+- [ ] `intent_breakdown` percentages sum to 100% (±0.1) and `outcome_breakdown` percentages sum to 100% (±0.1).
+- [ ] The `cross_tab` is well-formed: one row per intent with `positive + neutral + negative == total`, and the `total` column sums to the number of calls.
+- [ ] The labelled CSV export contains all original columns **plus** `Intent` and `Outcome`, one row per input row, in input order.
+- [ ] **Idempotency:** re-running classify for the same dataset + column does **not** re-classify already-labelled rows — no new `call_labels` rows are created and no Gemini classification call is made for those rows (asserted by comparing Gemini call counts / label ids across two runs).
+- [ ] The progress endpoint reports `classified_calls == total_calls` and a non-zero `cost_usd` on completion.

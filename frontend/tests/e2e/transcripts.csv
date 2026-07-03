@@ -1,0 +1,8 @@
+call_id,dialled_number,Conversation Log
+1001,8228128208,[AGENT] hello this is riya from avant financial how may i help you || [CUSTOMER] i want to know about a personal loan and the interest rate || [AGENT] sure we have loans starting at 12 percent || [CUSTOMER] great thank you that is very helpful
+1002,8228128209,[AGENT] hi this is sushant how can i assist || [CUSTOMER] my emi got deducted twice this month and i am very angry || [AGENT] i am sorry let me check || [CUSTOMER] this is unacceptable i want a refund now
+1003,8228128210,[AGENT] good morning how may i help || [CUSTOMER] can you tell me my account balance and last statement || [AGENT] your balance is fifty thousand rupees || [CUSTOMER] okay noted thanks
+1004,8228128211,[AGENT] hello i need to verify your registration please share your otp || [CUSTOMER] i did not get any otp and this is the third time calling || [AGENT] please wait || [CUSTOMER] this is frustrating i am done
+1005,8228128212,[AGENT] hi what are your branch timings || [CUSTOMER] yes what time does the andheri branch open tomorrow || [AGENT] it opens at ten am || [CUSTOMER] perfect thanks a lot
+1006,8228128213,,
+1007,8228128208,[AGENT] hello this is riya again about your loan enquiry || [CUSTOMER] yes i wanted to confirm the documents needed for the personal loan || [AGENT] you need id proof and salary slips || [CUSTOMER] understood thank you so much

@@ -1,7 +1,15 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import Text, TIMESTAMP, Integer, Float, ForeignKey
+from sqlalchemy import (
+    Text,
+    TIMESTAMP,
+    Integer,
+    Float,
+    ForeignKey,
+    Index,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -88,6 +96,63 @@ class MessageRow(Base):
     output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, default=_now
+    )
+
+
+class ClassificationJobRow(Base):
+    """A background Conversation Intelligence run over one dataset's transcript column."""
+
+    __tablename__ = "classification_jobs"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    dataset_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("datasets.id"), nullable=False
+    )
+    session_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("sessions.id"), nullable=False
+    )
+    text_column: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
+    total_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    classified_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    taxonomy_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, default=_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, default=_now, onupdate=_now
+    )
+
+
+class CallLabelRow(Base):
+    """One row per classified call. Idempotent by (dataset_id, text_column, row_index)."""
+
+    __tablename__ = "call_labels"
+    __table_args__ = (
+        UniqueConstraint(
+            "dataset_id", "text_column", "row_index", name="uq_call_labels_key"
+        ),
+        Index("ix_call_labels_dataset_column", "dataset_id", "text_column"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    job_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("classification_jobs.id"), nullable=False
+    )
+    dataset_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("datasets.id"), nullable=False
+    )
+    text_column: Mapped[str] = mapped_column(Text, nullable=False)
+    row_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    call_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    intent: Mapped[str] = mapped_column(Text, nullable=False)
+    outcome: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, default=_now
     )
