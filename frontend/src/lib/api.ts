@@ -42,6 +42,16 @@ export interface AskStep {
   status: string
 }
 
+// Structured result table serialized from the executed pandas result (P2 visual
+// outputs). Cells are JSON-safe scalars: string | number | boolean | null.
+export type TableCell = string | number | boolean | null
+export interface ResultTable {
+  columns: string[]
+  rows: TableCell[][]
+  row_count: number
+  truncated: boolean
+}
+
 export interface AskResult {
   message_id: string
   answer: string
@@ -52,6 +62,7 @@ export interface AskResult {
   cost_usd: number
   needs_clarification: boolean
   clarify_question: string | null
+  table: ResultTable | null
   error: string | null
 }
 

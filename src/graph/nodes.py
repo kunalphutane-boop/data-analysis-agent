@@ -6,10 +6,14 @@ LLMClient.call_with_usage so tokens accumulate into the state for cost computati
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 from pathlib import Path
 from typing import Any
+
+import numpy as np
+import pandas as pd
 
 from analysis import loader, sandbox
 from analysis.profiler import schema_from_profile
@@ -243,9 +247,112 @@ def answer(state: AgentState) -> AgentState:
         return {"error": f"Answer generation failed: {exc}", "steps": _set_step(state, *_STEP_ANSWER, "failed")}
 
 
+# Caps so a huge result never bloats the /ask payload or the UI table.
+_TABLE_MAX_ROWS = 50
+_TABLE_MAX_COLS = 20
+
+
+def _cell(v: Any) -> Any:
+    """Coerce one value to a JSON-safe scalar (NaN → None, numpy/Timestamp → native)."""
+    if v is None:
+        return None
+    if isinstance(v, np.generic):
+        v = v.item()
+    if isinstance(v, float):
+        return None if math.isnan(v) else v
+    if isinstance(v, (int, str, bool)):
+        return v
+    if isinstance(v, pd.Timestamp):
+        return v.isoformat()
+    return str(v)
+
+
+def _result_table(result: Any) -> dict | None:
+    """Best-effort structured table from an executed pandas result — no LLM.
+
+    Returns `{columns, rows, row_count, truncated}` (rows/cols capped) or None when
+    the result isn't tabular-ish. Never raises: a bad shape just yields no table.
+    """
+    try:
+        if isinstance(result, pd.DataFrame):
+            total_rows, total_cols = result.shape
+            body = result.iloc[:_TABLE_MAX_ROWS, :_TABLE_MAX_COLS]
+            include_index = not isinstance(result.index, pd.RangeIndex)
+            columns = ([str(body.index.name or "index")] if include_index else []) + [
+                str(c) for c in body.columns
+            ]
+            rows = []
+            for idx, values in zip(body.index, body.itertuples(index=False, name=None)):
+                cells = ([_cell(idx)] if include_index else []) + [_cell(v) for v in values]
+                rows.append(cells)
+            return {
+                "columns": columns,
+                "rows": rows,
+                "row_count": int(total_rows),
+                "truncated": bool(total_rows > _TABLE_MAX_ROWS or total_cols > _TABLE_MAX_COLS),
+            }
+        if isinstance(result, pd.Series):
+            total = len(result)
+            body = result.head(_TABLE_MAX_ROWS)
+            key = str(result.index.name or "key")
+            val = str(result.name or "value")
+            rows = [[_cell(i), _cell(v)] for i, v in body.items()]
+            return {
+                "columns": [key, val],
+                "rows": rows,
+                "row_count": int(total),
+                "truncated": total > _TABLE_MAX_ROWS,
+            }
+        if isinstance(result, dict):
+            items = list(result.items())
+            rows = [[_cell(k), _cell(v)] for k, v in items[:_TABLE_MAX_ROWS]]
+            return {
+                "columns": ["key", "value"],
+                "rows": rows,
+                "row_count": len(items),
+                "truncated": len(items) > _TABLE_MAX_ROWS,
+            }
+        if isinstance(result, (list, tuple)):
+            seq = list(result)
+            if seq and all(isinstance(x, dict) for x in seq):
+                cols: list[str] = []
+                for d in seq[:_TABLE_MAX_ROWS]:
+                    for k in d:
+                        if str(k) not in cols:
+                            cols.append(str(k))
+                cols = cols[:_TABLE_MAX_COLS]
+                rows = [[_cell(d.get(c)) for c in cols] for d in seq[:_TABLE_MAX_ROWS]]
+                return {
+                    "columns": cols,
+                    "rows": rows,
+                    "row_count": len(seq),
+                    "truncated": len(seq) > _TABLE_MAX_ROWS,
+                }
+            rows = [[_cell(x)] for x in seq[:_TABLE_MAX_ROWS]]
+            return {
+                "columns": ["value"],
+                "rows": rows,
+                "row_count": len(seq),
+                "truncated": len(seq) > _TABLE_MAX_ROWS,
+            }
+        if isinstance(result, (int, float, str, bool, np.generic)):
+            return {"columns": ["value"], "rows": [[_cell(result)]], "row_count": 1, "truncated": False}
+    except Exception:  # never let table-building break the answer
+        return None
+    return None
+
+
 def enrich(state: AgentState) -> AgentState:
-    """P1 no-op pass-through. P2 adds charts / follow-ups / quality flags."""
-    return {}
+    """Best-effort structured table from the executed result (P2 visual outputs).
+
+    Frontend-first, no LLM: the raw pandas `result` is serialised to a capped,
+    JSON-safe table the UI renders and auto-charts. Never blocks the core answer —
+    on an execution error or a non-tabular result there is simply no table.
+    """
+    if state.get("execution_error"):
+        return {}
+    table = _result_table(state.get("execution_result"))
+    return {"table": table} if table else {}
 
 
 def finalize(state: AgentState) -> AgentState:

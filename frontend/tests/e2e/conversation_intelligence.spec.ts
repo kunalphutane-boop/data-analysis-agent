@@ -145,3 +145,30 @@ test('conversation intelligence action is present on a loaded dataset', async ({
   await expect(page.getByTestId('analyze-conversations')).toBeVisible()
   await expect(page.getByTestId('sessions-sidebar')).toBeVisible()
 })
+
+test('analytics workspace renders left/right 30-70 split after upload', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 })
+  await page.goto('')
+  await page.getByTestId('file-input').setInputFiles(transcriptFixture())
+  await expect(page.getByTestId('profile-panel')).toBeVisible({ timeout: 60_000 })
+
+  const left = page.getByTestId('analytics-left-panel')
+  const right = page.getByTestId('analytics-right-panel')
+  await expect(left).toBeVisible()
+  await expect(right).toBeVisible()
+
+  const leftBox = await left.boundingBox()
+  const rightBox = await right.boundingBox()
+  expect(leftBox).not.toBeNull()
+  expect(rightBox).not.toBeNull()
+
+  if (leftBox && rightBox) {
+    const totalWidth = leftBox.width + rightBox.width
+    const leftRatio = leftBox.width / totalWidth
+    const rightRatio = rightBox.width / totalWidth
+    expect(leftRatio).toBeGreaterThan(0.24)
+    expect(leftRatio).toBeLessThan(0.36)
+    expect(rightRatio).toBeGreaterThan(0.64)
+    expect(rightRatio).toBeLessThan(0.76)
+  }
+})

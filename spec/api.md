@@ -85,13 +85,18 @@ None. Local single-user tool bound to `localhost:8001`. No tokens, no CORS beyon
   "cost_usd": 0.00021,
   "needs_clarification": false,
   "clarify_question": null,
+  "table": {"columns": ["region", "revenue"],
+            "rows": [["West", 1200000], ["East", 900000]],
+            "row_count": 2, "truncated": false},
   "error": null
 }, "error": null}
 ```
 When the question is ambiguous, the graph returns `needs_clarification: true` and `clarify_question: "Which revenue column — gross or net?"` with `answer` set to that clarifying question and empty `generated_code`. When execution fails after all retries, `error` holds a plain-language failure and `answer` explains it.
+
+`table` is a **best-effort, no-LLM** structured serialization of the executed pandas `result` (P2 visual outputs), produced by the graph's `enrich` node: `columns` (strings), `rows` (each a list of JSON-safe cells — string | number | boolean | null; NaN → null), `row_count` (rows in the full result), and `truncated` (true when rows/cols were capped — 50 rows × 20 cols). It is `null` when the result isn't tabular-ish, when execution errored, or on clarify. The UI renders it as a summary table and, when the shape suits (a distinct label column + a numeric value column, ≤ 30 rows), auto-picks a bar chart — chart-building never blocks the answer.
 **Errors:** 400 `bad_request` (missing fields), 404 `not_found` (unknown session/dataset), 500.
 
-These field names (`answer`, `generated_code`, `steps`, `input_tokens`, `output_tokens`, `cost_usd`, `needs_clarification`, `clarify_question`) are exactly what the graph in [`agent.md`](agent.md) produces and what the UI in [`ui.md`](ui.md) renders.
+These field names (`answer`, `generated_code`, `steps`, `input_tokens`, `output_tokens`, `cost_usd`, `needs_clarification`, `clarify_question`, `table`) are exactly what the graph in [`agent.md`](agent.md) produces and what the UI in [`ui.md`](ui.md) renders.
 
 ---
 

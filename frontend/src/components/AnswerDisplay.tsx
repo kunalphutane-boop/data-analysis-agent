@@ -1,10 +1,99 @@
-// REAL: renders the /ask response — plain-language answer, step list + counter,
+// REAL: renders the /ask response — plain-language answer, a structured result
+// table + an auto-picked chart (P2 visual outputs), step list + counter,
 // collapsible code, token/cost badge, clarify + error states.
-// Charts area + Export buttons are STUBS. See spec/ui.md.
+// Export buttons remain STUBS (Phase 3). See spec/ui.md + spec/capabilities/visual_outputs.md.
 'use client'
 
-import { formatCost, type AskResult } from '@/lib/api'
-import { StubButton, StubPanel } from './Stub'
+import { formatCost, type AskResult, type ResultTable, type TableCell } from '@/lib/api'
+import { BarChart, type BarDatum } from './charts'
+import { StubButton } from './Stub'
+
+function isNum(v: TableCell): v is number {
+  return typeof v === 'number' && Number.isFinite(v)
+}
+
+function fmtCell(v: TableCell): string {
+  if (v === null || v === undefined) return '—'
+  if (typeof v === 'number') return v.toLocaleString(undefined, { maximumFractionDigits: 4 })
+  if (typeof v === 'boolean') return v ? 'true' : 'false'
+  return v
+}
+
+// Auto-pick a bar chart from a result table: needs a numeric value column, a
+// distinct label column, and a sane number of rows. Returns null when the table
+// isn't chartable (the table alone is then shown).
+function pickChart(table: ResultTable): BarDatum[] | null {
+  const { columns, rows } = table
+  if (rows.length < 1 || rows.length > 30 || columns.length < 2) return null
+  let valueIdx = -1
+  for (let c = columns.length - 1; c >= 0; c--) {
+    if (rows.every((r) => isNum(r[c]))) {
+      valueIdx = c
+      break
+    }
+  }
+  if (valueIdx === -1) return null
+  let labelIdx = columns.findIndex((_, c) => c !== valueIdx && rows.some((r) => !isNum(r[c])))
+  if (labelIdx === -1) labelIdx = columns.findIndex((_, c) => c !== valueIdx)
+  if (labelIdx === -1) return null
+  const data = rows.map((r) => ({ label: fmtCell(r[labelIdx]), value: Number(r[valueIdx]) }))
+  if (new Set(data.map((d) => d.label)).size !== data.length) return null // categories must be distinct
+  return [...data].sort((a, b) => b.value - a.value).slice(0, 15)
+}
+
+function ResultView({ table }: { table: ResultTable }) {
+  const chart = pickChart(table)
+  return (
+    <div data-testid="result-visuals" className="space-y-4">
+      {chart && (
+        <div data-testid="answer-chart">
+          <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+            Chart
+          </h4>
+          <BarChart testId="answer-bar-chart" data={chart} />
+        </div>
+      )}
+      <div data-testid="answer-table">
+        <div className="mb-2 flex items-center justify-between">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Result</h4>
+          <span className="text-xs text-gray-400">
+            {table.row_count.toLocaleString()} row{table.row_count === 1 ? '' : 's'}
+            {table.truncated && ` · showing first ${table.rows.length}`}
+          </span>
+        </div>
+        <div className="overflow-x-auto rounded-lg border border-gray-200">
+          <table className="w-full border-collapse text-left text-sm">
+            <thead>
+              <tr className="border-b border-gray-200 bg-gray-50 text-xs uppercase tracking-wide text-gray-500">
+                {table.columns.map((c, i) => (
+                  <th key={i} className="px-3 py-2 font-medium">
+                    {c}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {table.rows.map((row, ri) => (
+                <tr key={ri} className="border-b border-gray-100 last:border-0 hover:bg-gray-50/60">
+                  {row.map((cell, ci) => (
+                    <td
+                      key={ci}
+                      className={`px-3 py-1.5 tabular-nums ${
+                        isNum(cell) ? 'text-right text-gray-800' : 'text-gray-700'
+                      }`}
+                    >
+                      {fmtCell(cell)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 function StepList({ steps }: { steps: AskResult['steps'] }) {
   const total = steps.length
@@ -125,11 +214,12 @@ export function AnswerDisplay({ result }: { result: AskResult | null }) {
         </span>
       </div>
 
-      {/* Stubs: charts + exports */}
-      <StubPanel title="Charts" testId="charts-stub">
-        Interactive charts for this answer will appear here.
-      </StubPanel>
+      {/* Real: structured result table + auto-picked chart (P2 visual outputs). */}
+      {!clarify && !failed && result.table && result.table.rows.length > 0 && (
+        <ResultView table={result.table} />
+      )}
 
+      {/* Exports remain stubbed (Phase 3). */}
       <div data-testid="exports-stub" className="flex flex-wrap gap-2">
         <StubButton label="Export cleaned CSV" />
         <StubButton label="Export chart image" />

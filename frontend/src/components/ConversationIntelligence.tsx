@@ -739,3 +739,5 @@ export function ConversationIntelligence({ dataset }: { dataset: Dataset }) {
     </section>
   )
 }
+
+export { BusinessContextPanel }

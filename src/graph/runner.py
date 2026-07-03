@@ -90,5 +90,6 @@ def run_ask(session_id: str, dataset_id: str, question: str) -> dict:
         "cost_usd": cost_usd,
         "needs_clarification": needs_clarification,
         "clarify_question": clarify_question,
+        "table": final.get("table"),
         "error": error,
     }

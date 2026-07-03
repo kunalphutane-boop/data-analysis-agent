@@ -1,33 +1,38 @@
 # Capability: Visual Outputs (charts + tables)
 
-> **Phase 2.** Stub — detailed at build time for Phase 2.
+> **Phase 2.** Frontend-first, no-LLM approach: the graph serializes the executed
+> result to a structured table; the frontend renders that table and auto-picks a
+> simple chart from it.
 
 ## What It Does
-Renders answers as interactive charts and summary tables when the result is chartable, driven by a chart spec the agent emits.
+Renders each `/ask` answer with a **summary table** of the executed pandas result and, when the shape suits, an **auto-picked bar chart** — alongside the plain-language answer. Deterministic and free: no extra Gemini call.
 
 ## Inputs
 | Input | Type | Source | Required |
 |-------|------|--------|----------|
-| execution_result | any | agent graph | yes |
+| execution_result | any (DataFrame / Series / scalar / dict / list) | agent graph (`state.execution_result`) | yes |
 
 ## Outputs
 | Output | Type | Destination |
 |--------|------|-------------|
-| chart spec | JSON (Recharts/Vega-Lite-ready) | `/ask` response `chart` field |
-| summary table | JSON | `/ask` response |
+| summary table | JSON `{columns, rows, row_count, truncated}` (rows/cols capped at 50×20; cells JSON-safe; NaN → null) | `/ask` response `table` field |
+| auto chart | rendered client-side from `table` (no server field) | UI (`AnswerDisplay`) |
 
 ## External Calls
 | System | Operation | On Failure |
 |--------|-----------|------------|
-| Gemini (`enrich` node) | derive a chart spec from the result | degrade: return answer without chart |
+| — | none; the `enrich` node builds the table by pure serialization (no LLM) | on any serialization error the node returns no table — the answer is unaffected |
 
 ## Business Rules
-- The `enrich` node (P1 no-op) activates to emit a chart spec + summary table; the frontend renders with Recharts.
-- Chart generation is best-effort — a failure never blocks the core answer.
+- The graph's `enrich` node (P1 no-op) activates to serialize `execution_result` into a capped, JSON-safe `table` (DataFrame → columns+rows incl. a non-default index; Series/dict → key/value; list-of-dicts → union columns; scalar → single cell). No Gemini call.
+- **Best-effort:** table-building never raises out — a non-tabular result or an execution error simply yields `table: null`, and the plain answer is unchanged.
+- The frontend renders the table always (when present) and **auto-picks a bar chart** only when the table has a distinct label column + a numeric value column and ≤ 30 rows (bars sorted by value, capped at 15); otherwise it shows the table alone. Reuses the shared dependency-free chart primitives (no Recharts).
 
 ## Error Cases
-- Non-chartable result → no chart, table only.
+- Non-tabular / non-chartable result → `table` may still render (e.g. a scalar) but no chart; a truly unusable result → `table: null`, answer only.
+- Execution error or clarify → `table: null`.
 
 ## Success Criteria
-- [ ] A grouped/aggregated answer returns a chart spec that renders in the UI plus a summary table.
-- [ ] Chart-spec failure still returns the plain answer.
+- [ ] A grouped/aggregated answer (e.g. revenue by region) returns a `table` with the right columns/rows and the UI renders both the table and an auto-picked bar chart.
+- [ ] A scalar answer (e.g. a single total) returns a one-cell `table` and no chart.
+- [ ] A serialization failure or execution error still returns the plain answer with `table: null` — the answer is never blocked.

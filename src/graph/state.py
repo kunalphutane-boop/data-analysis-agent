@@ -34,6 +34,7 @@ class AgentState(TypedDict, total=False):
     answer: str
     steps: list                     # [{step, label, status}]
     error: str | None
+    table: dict | None              # structured result table {columns, rows, row_count, truncated}
 
     # Cost (accumulated across all Gemini calls)
     input_tokens: int
