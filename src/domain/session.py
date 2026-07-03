@@ -31,3 +31,27 @@ def ensure_session(session_id: str | None) -> str:
             if row is not None:
                 return row.id
     return create_session()["id"]
+
+
+class NotFoundError(Exception):
+    pass
+
+
+def get_business_context(session_id: str) -> str:
+    """Return the session's saved free-text business context ("" if unset)."""
+    with create_db_session() as session:
+        row = session.get(SessionRow, session_id)
+        if row is None:
+            raise NotFoundError(f"Session {session_id} not found.")
+        return row.business_context or ""
+
+
+def set_business_context(session_id: str, business_context: str) -> str:
+    """Persist a new business context for the session. Returns the stored value."""
+    value = (business_context or "").strip()
+    with create_db_session() as session:
+        row = session.get(SessionRow, session_id)
+        if row is None:
+            raise NotFoundError(f"Session {session_id} not found.")
+        row.business_context = value
+        return value

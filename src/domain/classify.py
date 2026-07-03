@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from analysis import classifier, loader
-from db.models import CallLabelRow, ClassificationJobRow, DatasetRow
+from db.models import CallLabelRow, ClassificationJobRow, DatasetRow, SessionRow
 from db.session import create_db_session
 
 
@@ -61,10 +61,17 @@ def start_job(dataset_id: str, text_column: str, *, spawn: bool = True) -> dict:
         if text_column not in _dataset_columns(dataset):
             raise BadColumnError(f"Column {text_column!r} is not in the dataset.")
 
+        # Fingerprint the session's business context into the job's cache key, so a
+        # changed context is a fresh classification run (fresh, context-aware labels).
+        session_row = session.get(SessionRow, dataset.session_id)
+        business_context = (session_row.business_context or "") if session_row else ""
+        context_hash = classifier.context_fingerprint(business_context)
+
         job = ClassificationJobRow(
             dataset_id=dataset_id,
             session_id=dataset.session_id,
             text_column=text_column,
+            context_hash=context_hash,
             status="pending",
             total_calls=int(dataset.row_count),
             classified_calls=0,
@@ -137,12 +144,15 @@ def _pcts(counts: list[int], total: int) -> list[float]:
     return floored
 
 
-def _load_labels(session, dataset_id: str, text_column: str) -> list[CallLabelRow]:
+def _load_labels(
+    session, dataset_id: str, text_column: str, context_hash: str
+) -> list[CallLabelRow]:
     return (
         session.query(CallLabelRow)
         .filter(
             CallLabelRow.dataset_id == dataset_id,
             CallLabelRow.text_column == text_column,
+            CallLabelRow.context_hash == context_hash,
         )
         .all()
     )
@@ -202,7 +212,7 @@ def get_results(job_id: str) -> dict:
         job = session.get(ClassificationJobRow, job_id)
         if job is None:
             raise NotFoundError(f"Job {job_id} not found.")
-        labels = _load_labels(session, job.dataset_id, job.text_column)
+        labels = _load_labels(session, job.dataset_id, job.text_column, job.context_hash)
         agg = _aggregate(labels)
         taxonomy = json.loads(job.taxonomy_json) if job.taxonomy_json else []
         return {
@@ -235,7 +245,9 @@ def export_labelled_csv(job_id: str) -> tuple[str, str]:
         filename = dataset.filename
         by_index = {
             lbl.row_index: (lbl.intent, lbl.outcome)
-            for lbl in _load_labels(session, job.dataset_id, job.text_column)
+            for lbl in _load_labels(
+                session, job.dataset_id, job.text_column, job.context_hash
+            )
         }
 
     df = loader.load_dataframe(filepath)

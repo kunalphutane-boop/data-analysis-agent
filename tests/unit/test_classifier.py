@@ -76,6 +76,80 @@ def test_normalise_taxonomy_handles_garbage():
     assert tax == classifier.BASE_TAXONOMY
 
 
+def test_normalise_taxonomy_context_mode_does_not_force_base():
+    # With a business context (force_base=False) the model's domain labels are kept as-is,
+    # not padded with the generic lending base set.
+    tax = classifier.normalise_taxonomy(
+        ["Loan enquiry", "Disbursement delay", "Collections/Overdue"], force_base=False
+    )
+    assert tax == [
+        "Loan enquiry",
+        "Disbursement delay",
+        "Collections/Overdue",
+        "Other/Unclear",
+    ]
+    # Generic-only base categories are NOT injected.
+    assert "Branch/Timing" not in tax
+
+
+def test_normalise_taxonomy_context_mode_falls_back_when_empty():
+    tax = classifier.normalise_taxonomy([], force_base=False)
+    assert tax == classifier.BASE_TAXONOMY
+
+
+# --- business context fingerprint (cache key) ---------------------------------
+
+def test_context_fingerprint_stable_and_empty_default():
+    from db.models import EMPTY_CONTEXT_HASH
+
+    assert classifier.context_fingerprint("") == EMPTY_CONTEXT_HASH
+    assert classifier.context_fingerprint(None) == EMPTY_CONTEXT_HASH
+    # Whitespace-only normalises to empty.
+    assert classifier.context_fingerprint("   ") == EMPTY_CONTEXT_HASH
+    # Deterministic + insensitive to surrounding whitespace.
+    a = classifier.context_fingerprint("lending NBFC")
+    assert a == classifier.context_fingerprint("  lending NBFC  ")
+    # A different context yields a different fingerprint.
+    assert a != classifier.context_fingerprint("insurance claims")
+
+
+def test_business_context_injected_into_classify_prompt():
+    tax = list(classifier.BASE_TAXONOMY)
+    resp = json.dumps([{"call_index": 0, "intent": "EMI/Payment", "outcome": "Negative"}])
+    client = _FakeClient([resp])
+    client.systems: list = []
+    orig = client.call_with_usage
+
+    def _spy(prompt, *, system=None):
+        client.systems.append(system)
+        return orig(prompt, system=system)
+
+    client.call_with_usage = _spy  # type: ignore[assignment]
+    classifier.classify_batch(
+        client, tax, [(0, "emi failed")], business_context="We are a lending NBFC."
+    )
+    # The injected block (with the user's verbatim text) is appended to the prompt.
+    assert client.systems and "authored by the user" in client.systems[0]
+    assert "We are a lending NBFC." in client.systems[0]
+
+
+def test_no_business_context_leaves_prompt_unchanged():
+    tax = list(classifier.BASE_TAXONOMY)
+    resp = json.dumps([{"call_index": 0, "intent": "EMI/Payment", "outcome": "Neutral"}])
+    client = _FakeClient([resp])
+    client.systems = []
+    orig = client.call_with_usage
+
+    def _spy(prompt, *, system=None):
+        client.systems.append(system)
+        return orig(prompt, system=system)
+
+    client.call_with_usage = _spy  # type: ignore[assignment]
+    classifier.classify_batch(client, tax, [(0, "emi failed")])  # no context
+    # The injected user block is absent (the static prompt may still mention the feature).
+    assert client.systems and "authored by the user" not in client.systems[0]
+
+
 def test_detect_call_id_column():
     assert classifier.detect_call_id_column(["call_id", "Conversation Log"]) == "call_id"
     assert classifier.detect_call_id_column(["dialled_number", "log"]) == "dialled_number"

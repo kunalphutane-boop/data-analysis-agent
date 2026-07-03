@@ -103,6 +103,31 @@ export async function createSession(title?: string): Promise<Session> {
   return unwrap<Session>(res)
 }
 
+// Business Context — free-text description of the user's business that grounds
+// Conversation Intelligence (Intent taxonomy + Outcome) in their domain. Scoped to
+// the session. Contract: spec/api.md "GET/PUT /sessions/{id}/business_context".
+export interface BusinessContext {
+  session_id: string
+  business_context: string
+}
+
+export async function getBusinessContext(sessionId: string): Promise<BusinessContext> {
+  const res = await fetch(`/sessions/${sessionId}/business_context`)
+  return unwrap<BusinessContext>(res)
+}
+
+export async function saveBusinessContext(
+  sessionId: string,
+  businessContext: string,
+): Promise<BusinessContext> {
+  const res = await fetch(`/sessions/${sessionId}/business_context`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ business_context: businessContext }),
+  })
+  return unwrap<BusinessContext>(res)
+}
+
 export async function uploadDataset(file: File, sessionId?: string): Promise<Dataset> {
   const form = new FormData()
   form.append('file', file)

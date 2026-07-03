@@ -21,6 +21,13 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# Fingerprint of an empty/unset business context (sha256("")[:16]). Used as the
+# default cache-key component so a run with no business context behaves exactly as
+# it did before this column existed. Kept in sync with
+# `analysis.classifier.context_fingerprint("")`.
+EMPTY_CONTEXT_HASH = "e3b0c44298fc1c14"
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -48,6 +55,9 @@ class SessionRow(Base):
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     title: Mapped[str] = mapped_column(Text, nullable=False, default="Untitled analysis")
+    # User-authored, free-text business context that grounds Conversation
+    # Intelligence classification (Intent taxonomy + Outcome) in the user's domain.
+    business_context: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, default=_now
     )
@@ -114,6 +124,11 @@ class ClassificationJobRow(Base):
         Text, ForeignKey("sessions.id"), nullable=False
     )
     text_column: Mapped[str] = mapped_column(Text, nullable=False)
+    # Fingerprint of the business context this job was run with (part of the cache
+    # key). A changed business context yields a new hash → a fresh classification run.
+    context_hash: Mapped[str] = mapped_column(
+        Text, nullable=False, default=EMPTY_CONTEXT_HASH
+    )
     status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
     total_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     classified_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -136,9 +151,18 @@ class CallLabelRow(Base):
     __tablename__ = "call_labels"
     __table_args__ = (
         UniqueConstraint(
-            "dataset_id", "text_column", "row_index", name="uq_call_labels_key"
+            "dataset_id",
+            "text_column",
+            "context_hash",
+            "row_index",
+            name="uq_call_labels_key",
         ),
-        Index("ix_call_labels_dataset_column", "dataset_id", "text_column"),
+        Index(
+            "ix_call_labels_dataset_column",
+            "dataset_id",
+            "text_column",
+            "context_hash",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
@@ -149,6 +173,10 @@ class CallLabelRow(Base):
         Text, ForeignKey("datasets.id"), nullable=False
     )
     text_column: Mapped[str] = mapped_column(Text, nullable=False)
+    # Business-context fingerprint this label was produced under (part of the key).
+    context_hash: Mapped[str] = mapped_column(
+        Text, nullable=False, default=EMPTY_CONTEXT_HASH
+    )
     row_index: Mapped[int] = mapped_column(Integer, nullable=False)
     call_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     intent: Mapped[str] = mapped_column(Text, nullable=False)

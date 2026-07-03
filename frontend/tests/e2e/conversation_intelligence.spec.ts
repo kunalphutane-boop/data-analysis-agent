@@ -56,6 +56,20 @@ test('analyze conversations -> progress -> breakdowns + cross-tab + download', a
   // Reveal the picker.
   await page.getByTestId('analyze-conversations').click()
 
+  // Business Context panel is present with its helper text. Author + save a lending
+  // context so the run is grounded in the user's domain.
+  const bcPanel = page.getByTestId('business-context-panel')
+  await expect(bcPanel).toBeVisible()
+  await expect(page.getByTestId('business-context-helper')).toBeVisible()
+  const bcInput = page.getByTestId('business-context-input')
+  await bcInput.fill(
+    'We are a lending NBFC; this call center handles loan servicing, EMI, ' +
+      'KYC/verification, disbursement and collections.',
+  )
+  await page.getByTestId('business-context-save').click()
+  // After a changed save, the "re-run to re-classify" notice appears.
+  await expect(page.getByTestId('business-context-saved')).toBeVisible({ timeout: 15_000 })
+
   // The column picker defaults to "Conversation Log".
   const select = page.getByTestId('transcript-column-select')
   await expect(select).toBeVisible()

@@ -99,8 +99,22 @@ These field names (`answer`, `generated_code`, `steps`, `input_tokens`, `output_
 
 Routers live in `src/api/classify.py`, registered in `src/api/__init__.py`. All use the same `ok(data)` / `api_error(code, message, status)` envelope. The classify job runs as an in-process background async task; the client polls the progress endpoint. See [`capabilities/conversation_intelligence.md`](capabilities/conversation_intelligence.md) and [`agent.md`](agent.md).
 
+### `GET /sessions/{session_id}/business_context`
+**Purpose:** read the session's saved free-text **business context** — a user-authored description of their domain that grounds the Conversation Intelligence Intent taxonomy + Outcome judgments. `""` when unset.
+**Response (200):**
+```json
+{"data": {"session_id": "uuid", "business_context": "We are a lending NBFC; this call center handles loan servicing, EMI, KYC/verification, disbursement and collections."}, "error": null}
+```
+**Errors:** 404 `not_found` (unknown session).
+
+### `PUT /sessions/{session_id}/business_context`
+**Purpose:** save (replace) the session's business context. Trimmed on save. Reused automatically on every subsequent classify run; a **changed** value re-labels on the next run (it is part of the classification cache key), an unchanged value resumes with no re-bill.
+**Request:** `{"business_context": "string (may be empty to clear)"}`
+**Response (200):** same shape as the GET (the stored, trimmed value).
+**Errors:** 404 `not_found` (unknown session), 500 (DB failure).
+
 ### `POST /datasets/{id}/classify`
-**Purpose:** start a Conversation Intelligence job for a dataset's transcript column (idempotent/resumable — reuses existing labels).
+**Purpose:** start a Conversation Intelligence job for a dataset's transcript column (idempotent/resumable — reuses existing labels). The job automatically picks up the session's saved **business context** and injects it into both classification prompts; the context's fingerprint is part of the resume/cache key (same dataset + column + context → resume, no re-bill; changed context → a fresh run with fresh, context-aware labels).
 **Request:** `{"text_column": "Conversation Log"}` (the transcript column; the frontend auto-detects a `"Conversation Log"` column and defaults the picker to it).
 **Response (200):**
 ```json

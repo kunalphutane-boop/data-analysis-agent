@@ -12,14 +12,21 @@ import {
   ApiError,
   detectTranscriptColumn,
   formatCost,
+  getBusinessContext,
   getClassifyProgress,
   getClassifyResults,
   labelledCsvUrl,
+  saveBusinessContext,
   startClassify,
   type ClassifyProgress,
   type ClassifyResults,
   type Dataset,
 } from '@/lib/api'
+
+const BUSINESS_CONTEXT_HINT =
+  "Describe your business so intents & outcomes are tailored — e.g. 'We are a lending " +
+  'NBFC; this call center handles loan servicing, EMI, KYC/verification, disbursement ' +
+  "and collections.'"
 
 const POLL_INTERVAL_MS = 1500
 const OUTCOME_ORDER = ['Positive', 'Neutral', 'Negative'] as const
@@ -214,6 +221,127 @@ function ResultsView({ jobId, results }: { jobId: string; results: ClassifyResul
   )
 }
 
+function BusinessContextPanel({ sessionId }: { sessionId: string }) {
+  const [text, setText] = useState('')
+  const [savedValue, setSavedValue] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  // True once a save actually changed the stored context — so the user knows a
+  // re-run will re-classify with the new context.
+  const [changedOnSave, setChangedOnSave] = useState(false)
+
+  useEffect(() => {
+    let active = true
+    setLoading(true)
+    getBusinessContext(sessionId)
+      .then((bc) => {
+        if (!active) return
+        setText(bc.business_context)
+        setSavedValue(bc.business_context)
+      })
+      .catch(() => {
+        // Absent/unset context is fine — start empty.
+        if (active) {
+          setText('')
+          setSavedValue('')
+        }
+      })
+      .finally(() => {
+        if (active) setLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [sessionId])
+
+  async function handleSave() {
+    setSaving(true)
+    setError(null)
+    const previous = savedValue.trim()
+    try {
+      const bc = await saveBusinessContext(sessionId, text)
+      setText(bc.business_context)
+      setSavedValue(bc.business_context)
+      setChangedOnSave(bc.business_context.trim() !== previous)
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : 'Network error — is the server running at :8001?',
+      )
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const dirty = text.trim() !== savedValue.trim()
+
+  return (
+    <div
+      data-testid="business-context-panel"
+      className="rounded-lg border border-gray-200 bg-gray-50 p-3"
+    >
+      <div className="flex items-center justify-between">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+          Business Context
+        </h3>
+        <button
+          type="button"
+          data-testid="business-context-save"
+          onClick={handleSave}
+          disabled={saving || loading || !dirty}
+          className="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {saving && (
+            <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+          )}
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+      </div>
+
+      <p data-testid="business-context-helper" className="mt-1 text-xs text-gray-500">
+        {BUSINESS_CONTEXT_HINT}
+      </p>
+
+      <textarea
+        data-testid="business-context-input"
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value)
+          setChangedOnSave(false)
+        }}
+        disabled={loading}
+        rows={3}
+        placeholder="e.g. We are a lending NBFC handling loan servicing, EMI, KYC/verification, disbursement and collections."
+        className="mt-2 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100"
+      />
+
+      {error && (
+        <p data-testid="business-context-error" className="mt-1 text-xs text-red-600">
+          {error}
+        </p>
+      )}
+
+      {changedOnSave && !dirty && (
+        <p
+          data-testid="business-context-saved"
+          className="mt-2 rounded-md bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700"
+        >
+          Business context updated. Run (or Re-run) classification to re-label every call
+          with the new context.
+        </p>
+      )}
+
+      {dirty && !loading && (
+        <p data-testid="business-context-dirty" className="mt-2 text-xs text-amber-600">
+          Unsaved changes — click Save before running so the new context is used.
+        </p>
+      )}
+    </div>
+  )
+}
+
 export function ConversationIntelligence({ dataset }: { dataset: Dataset }) {
   const columns = dataset.profile.columns
   const [open, setOpen] = useState(false)
@@ -341,6 +469,10 @@ export function ConversationIntelligence({ dataset }: { dataset: Dataset }) {
 
       {open && (
         <div className="mt-4 space-y-4">
+          {/* Business Context — grounds the taxonomy + outcome judgments in the
+              user's domain. Prefilled from the saved value, reused on every run. */}
+          <BusinessContextPanel sessionId={dataset.session_id} />
+
           {/* Column picker + start */}
           <div className="flex flex-wrap items-end gap-3">
             <label className="flex flex-col text-xs font-medium text-gray-600">

@@ -25,9 +25,17 @@ from db import session as session_module
 from db.models import CallLabelRow, ClassificationJobRow
 from domain import classify as classify_domain
 from domain import dataset as dataset_domain
+from domain import session as session_domain
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "transcripts_synthetic.csv"
 TEXT_COLUMN = "Conversation Log"
+
+LENDING_CONTEXT = (
+    "We are a lending NBFC. This call center handles loan servicing: loan enquiries, "
+    "EMI/payments, KYC/verification, disbursement, foreclosure/prepayment and "
+    "collections/overdue. A Negative outcome means the customer's servicing issue was "
+    "left unresolved or they raised a complaint."
+)
 
 
 @pytest.fixture
@@ -45,18 +53,17 @@ def _run_job(dataset_id: str) -> str:
     return job["job_id"]
 
 
-def _count_labels(dataset_id: str) -> int:
+def _count_labels(dataset_id: str, context_hash: str | None = None) -> int:
     from sqlalchemy.orm import Session
 
     with Session(session_module._engine) as s:
-        return (
-            s.query(CallLabelRow)
-            .filter(
-                CallLabelRow.dataset_id == dataset_id,
-                CallLabelRow.text_column == TEXT_COLUMN,
-            )
-            .count()
+        q = s.query(CallLabelRow).filter(
+            CallLabelRow.dataset_id == dataset_id,
+            CallLabelRow.text_column == TEXT_COLUMN,
         )
+        if context_hash is not None:
+            q = q.filter(CallLabelRow.context_hash == context_hash)
+        return q.count()
 
 
 @pytest.mark.usefixtures("_require_llm_key")
@@ -213,3 +220,131 @@ def test_labelled_csv_not_ready_409(api_client):
 def test_job_not_found_404(api_client):
     r = api_client.get("/classify/jobs/nope")
     assert r.status_code == 404
+
+
+# --- Business-context grounding (real Gemini) ---------------------------------
+
+@pytest.mark.usefixtures("_require_llm_key")
+def test_business_context_grounds_classification(api_client, fixture_df):
+    """With a lending business_context saved on the session, a run produces intent
+    labels drawn from a context-tailored taxonomy and valid outcomes for every row."""
+    n_rows = len(fixture_df)
+    data = _upload()
+    dataset_id, session_id = data["id"], data["session_id"]
+
+    session_domain.set_business_context(session_id, LENDING_CONTEXT)
+    context_hash = classifier.context_fingerprint(LENDING_CONTEXT)
+
+    job_id = _run_job(dataset_id)
+
+    prog = api_client.get(f"/classify/jobs/{job_id}").json()["data"]
+    assert prog["status"] == "done", prog
+    assert prog["classified_calls"] == n_rows
+    assert prog["cost_usd"] > 0
+
+    res = api_client.get(f"/classify/jobs/{job_id}/results").json()["data"]
+    taxonomy = res["taxonomy"]
+    assert taxonomy, "a context-tailored taxonomy must be present"
+    assert taxonomy[-1] == "Other/Unclear"
+
+    # Every label is a valid outcome and its intent comes from the taxonomy (or the
+    # empty-transcript sentinel) — i.e. labels are consistent with the derived taxonomy.
+    allowed_intents = set(taxonomy) | {classifier.NO_TRANSCRIPT_INTENT}
+    for row in res["intent_breakdown"]:
+        assert row["intent"] in allowed_intents, (row["intent"], taxonomy)
+    for row in res["outcome_breakdown"]:
+        assert row["outcome"] in {"Positive", "Neutral", "Negative"}
+
+    # Labels were persisted under the lending context fingerprint.
+    assert _count_labels(dataset_id, context_hash) == n_rows
+
+    # The frustrated/unresolved complaint call (fixture row 7) reads Negative.
+    from sqlalchemy.orm import Session
+
+    with Session(session_module._engine) as s:
+        by_index = {
+            lbl.row_index: lbl
+            for lbl in s.query(CallLabelRow)
+            .filter(
+                CallLabelRow.dataset_id == dataset_id,
+                CallLabelRow.context_hash == context_hash,
+            )
+            .all()
+        }
+    assert by_index[7].outcome == "Negative", "clear complaint should be Negative"
+
+
+@pytest.mark.usefixtures("_require_llm_key")
+def test_changing_context_invalidates_cache_and_relabels(api_client, fixture_df):
+    """Same context resumes (no re-bill); a CHANGED context is a fresh run that
+    re-classifies every call (labels recomputed, not served stale)."""
+    n_rows = len(fixture_df)
+
+    counter = {"classify": 0, "taxonomy": 0}
+    lock = threading.Lock()
+    orig_classify = classifier.classify_batch
+    orig_taxonomy = classifier.derive_taxonomy
+
+    def counting_classify(*a, **k):
+        with lock:
+            counter["classify"] += 1
+        return orig_classify(*a, **k)
+
+    def counting_taxonomy(*a, **k):
+        with lock:
+            counter["taxonomy"] += 1
+        return orig_taxonomy(*a, **k)
+
+    classifier.classify_batch = counting_classify
+    classifier.derive_taxonomy = counting_taxonomy
+    try:
+        data = _upload()
+        dataset_id, session_id = data["id"], data["session_id"]
+
+        # --- Run 1: lending context --------------------------------------------
+        session_domain.set_business_context(session_id, LENDING_CONTEXT)
+        hash_a = classifier.context_fingerprint(LENDING_CONTEXT)
+        _run_job(dataset_id)
+        run1_classify = counter["classify"]
+        assert run1_classify >= 1
+        assert _count_labels(dataset_id, hash_a) == n_rows
+
+        # Re-run with the SAME context → resume, no re-classification, no re-bill.
+        counter["classify"] = counter["taxonomy"] = 0
+        _run_job(dataset_id)
+        assert counter["classify"] == 0, "unchanged context must resume, not re-classify"
+        assert counter["taxonomy"] == 0
+        assert _count_labels(dataset_id, hash_a) == n_rows
+
+        # --- Run 2: CHANGED context → fresh, context-aware run -----------------
+        changed_context = (
+            "We are a health-insurance TPA call center. Calls are about claims intake, "
+            "pre-authorization, network hospitals, policy coverage and reimbursement "
+            "status. A Negative outcome means a denied or delayed claim."
+        )
+        session_domain.set_business_context(session_id, changed_context)
+        hash_b = classifier.context_fingerprint(changed_context)
+        assert hash_b != hash_a
+
+        counter["classify"] = counter["taxonomy"] = 0
+        job_b = _run_job(dataset_id)
+
+        # A changed context is NOT served from cache: it re-derives + re-classifies.
+        assert counter["classify"] >= 1, "changed context must trigger re-classification"
+        assert counter["taxonomy"] == 1, "changed context must derive a fresh taxonomy"
+
+        # Fresh label set under the new fingerprint; the old set is untouched.
+        assert _count_labels(dataset_id, hash_b) == n_rows
+        assert _count_labels(dataset_id, hash_a) == n_rows
+        # Two distinct context label sets now exist for the same dataset+column.
+        assert _count_labels(dataset_id) == 2 * n_rows
+
+        # The results for the changed-context job reflect the new taxonomy, not stale ones.
+        res_b = api_client.get(f"/classify/jobs/{job_b}/results").json()["data"]
+        assert res_b["total_calls"] == n_rows
+        assert res_b["taxonomy"] and res_b["taxonomy"][-1] == "Other/Unclear"
+        for row in res_b["outcome_breakdown"]:
+            assert row["outcome"] in {"Positive", "Neutral", "Negative"}
+    finally:
+        classifier.classify_batch = orig_classify
+        classifier.derive_taxonomy = orig_taxonomy

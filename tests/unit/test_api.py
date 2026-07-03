@@ -23,6 +23,47 @@ def test_create_session_default_title(api_client):
     assert r.json()["data"]["title"] == "Untitled analysis"
 
 
+# --- Business context (session-scoped, grounds Conversation Intelligence) ------
+
+def test_business_context_defaults_empty(api_client):
+    sid = api_client.post("/sessions", json={}).json()["data"]["id"]
+    r = api_client.get(f"/sessions/{sid}/business_context")
+    assert r.status_code == 200
+    data = r.json()["data"]
+    assert data["session_id"] == sid
+    assert data["business_context"] == ""
+
+
+def test_business_context_save_and_read_back(api_client):
+    sid = api_client.post("/sessions", json={}).json()["data"]["id"]
+    ctx = "We are a lending NBFC handling EMI, KYC and collections."
+    put = api_client.put(
+        f"/sessions/{sid}/business_context", json={"business_context": f"  {ctx}  "}
+    )
+    assert put.status_code == 200
+    # Stored trimmed.
+    assert put.json()["data"]["business_context"] == ctx
+
+    got = api_client.get(f"/sessions/{sid}/business_context").json()["data"]
+    assert got["business_context"] == ctx
+
+
+def test_business_context_can_be_cleared(api_client):
+    sid = api_client.post("/sessions", json={}).json()["data"]["id"]
+    api_client.put(f"/sessions/{sid}/business_context", json={"business_context": "x"})
+    api_client.put(f"/sessions/{sid}/business_context", json={"business_context": ""})
+    assert api_client.get(f"/sessions/{sid}/business_context").json()["data"][
+        "business_context"
+    ] == ""
+
+
+def test_business_context_unknown_session_404(api_client):
+    assert api_client.get("/sessions/nope/business_context").status_code == 404
+    r = api_client.put("/sessions/nope/business_context", json={"business_context": "y"})
+    assert r.status_code == 404
+    assert r.json()["detail"]["code"] == "not_found"
+
+
 def test_upload_non_csv_rejected(api_client):
     files = {"file": ("notes.txt", io.BytesIO(b"hello"), "text/plain")}
     r = api_client.post("/datasets/upload", files=files)
