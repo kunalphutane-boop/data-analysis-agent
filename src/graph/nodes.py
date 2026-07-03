@@ -32,6 +32,31 @@ _STEP_GEN = (2, "Generate code")
 _STEP_EXEC = (3, "Execute")
 _STEP_ANSWER = (4, "Answer")
 
+# Long free-text cells (e.g. call transcripts) are truncated before being embedded
+# in the plan/generate_code prompts: the model only needs a preview to write pandas,
+# and the sandbox still runs on the full real DataFrame. This keeps those two prompts
+# small (a few hundred tokens vs. ~9k for transcript data) — the main latency win.
+_SAMPLE_CELL_MAX_CHARS = 200
+
+
+def _compact_sample(sample: list) -> list:
+    """Trim long string cells in the LLM-facing sample preview. Non-string cells and
+    short strings pass through unchanged. Does not affect execution (full data)."""
+    compact: list = []
+    for row in sample:
+        if isinstance(row, dict):
+            compact.append(
+                {
+                    k: (v[:_SAMPLE_CELL_MAX_CHARS] + "…")
+                    if isinstance(v, str) and len(v) > _SAMPLE_CELL_MAX_CHARS
+                    else v
+                    for k, v in row.items()
+                }
+            )
+        else:
+            compact.append(row)
+    return compact
+
 
 def _prompt(name: str) -> str:
     return (_PROMPTS / f"{name}.md").read_text(encoding="utf-8").strip()
@@ -116,7 +141,7 @@ def plan(state: AgentState) -> AgentState:
             "question": state["question"],
             "schema": state.get("schema", {}),
             "profile_columns": state.get("profile", {}).get("columns", []),
-            "sample": state.get("sample", []),
+            "sample": _compact_sample(state.get("sample", [])),
         }
         user = (
             f"Question: {state['question']}\n\n"
@@ -152,7 +177,7 @@ def generate_code(state: AgentState) -> AgentState:
             f"Question: {state['question']}",
             f"Plan: {state.get('plan', '')}",
             f"Schema (column: dtype):\n{json.dumps(state.get('schema', {}), indent=2)}",
-            f"Sample rows:\n{json.dumps(state.get('sample', []), indent=2)}",
+            f"Sample rows:\n{json.dumps(_compact_sample(state.get('sample', [])), indent=2)}",
         ]
         prior_error = state.get("execution_error")
         if prior_error and state.get("generated_code"):
