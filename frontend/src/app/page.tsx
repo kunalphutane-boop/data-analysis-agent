@@ -1,77 +1,135 @@
 'use client'
 
 import { useState } from 'react'
+import {
+  ApiError,
+  ask,
+  createSession,
+  uploadDataset,
+  type AskResult,
+  type Dataset,
+} from '@/lib/api'
+import { Sidebar } from '@/components/Sidebar'
+import { UploadDropzone } from '@/components/UploadDropzone'
+import { ProfilePanel } from '@/components/ProfilePanel'
+import { QuestionBox } from '@/components/QuestionBox'
+import { AnswerDisplay } from '@/components/AnswerDisplay'
+import { StubPanel } from '@/components/Stub'
 
 export default function Home() {
-  const [input, setInput] = useState('')
-  const [result, setResult] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [dataset, setDataset] = useState<Dataset | null>(null)
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    if (!input.trim()) return
-    setLoading(true)
-    setError(null)
-    setResult(null)
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+
+  const [question, setQuestion] = useState('')
+  const [asking, setAsking] = useState(false)
+  const [askError, setAskError] = useState<string | null>(null)
+  const [answer, setAnswer] = useState<AskResult | null>(null)
+
+  async function handleFile(file: File) {
+    setUploading(true)
+    setUploadError(null)
     try {
-      const res = await fetch('/runs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input_text: input }),
-      })
-      const data = await res.json()
-      if (!res.ok) {
-        setError(data.detail?.message ?? `Request failed (${res.status})`)
-      } else if (data.data?.error) {
-        setError(data.data.error)
-      } else {
-        setResult(data.data.output_text)
+      // Create a session first if we don't have one yet.
+      let sid = sessionId
+      if (!sid) {
+        const session = await createSession()
+        sid = session.id
+        setSessionId(sid)
       }
-    } catch {
-      setError('Network error — is the server running?')
+      const ds = await uploadDataset(file, sid)
+      setDataset(ds)
+      // A new dataset invalidates the previous answer.
+      setAnswer(null)
+      setAskError(null)
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? err.message
+          : 'Network error — is the server running at :8001?'
+      setUploadError(msg)
     } finally {
-      setLoading(false)
+      setUploading(false)
+    }
+  }
+
+  async function handleAsk() {
+    if (!sessionId || !dataset || !question.trim()) return
+    setAsking(true)
+    setAskError(null)
+    setAnswer(null)
+    try {
+      const result = await ask(sessionId, dataset.id, question.trim())
+      setAnswer(result)
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? err.message
+          : 'Network error — is the server running at :8001?'
+      setAskError(msg)
+    } finally {
+      setAsking(false)
     }
   }
 
   return (
-    <main className="mx-auto max-w-2xl px-4 py-16">
-      <h1 className="mb-8 text-3xl font-bold tracking-tight">Agent</h1>
+    <div className="flex min-h-screen">
+      <Sidebar />
 
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <textarea
-          className="w-full rounded-lg border border-gray-300 p-3 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-          rows={4}
-          placeholder="Enter text to transform…"
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          disabled={loading}
-        />
-        <button
-          type="submit"
-          disabled={loading || !input.trim()}
-          className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-        >
-          {loading ? 'Running…' : 'Run'}
-        </button>
-      </form>
+      <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-8">
+        <header className="mb-6">
+          <h1 className="text-2xl font-bold tracking-tight text-gray-900">
+            Data Analytics Agent
+          </h1>
+          <p className="mt-1 text-sm text-gray-500">
+            Upload a CSV, read its profile, ask a question — answers are backed by pandas
+            actually executed on your full data.
+          </p>
+        </header>
 
-      {error && (
-        <div className="mt-6 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-          {error}
+        <div className="space-y-5">
+          <UploadDropzone
+            onFile={handleFile}
+            loading={uploading}
+            error={uploadError}
+            filename={dataset?.filename ?? null}
+          />
+
+          <ProfilePanel dataset={dataset} />
+
+          {/* Data-quality flags STUB */}
+          <StubPanel title="Data-quality flags" testId="quality-flags-stub">
+            Automatic warnings about outliers, duplicates, and type mismatches.
+          </StubPanel>
+
+          <QuestionBox
+            value={question}
+            onChange={setQuestion}
+            onAsk={handleAsk}
+            loading={asking}
+            disabled={!dataset}
+          />
+
+          {askError && (
+            <div
+              data-testid="ask-error"
+              className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700"
+            >
+              {askError}
+            </div>
+          )}
+
+          <AnswerDisplay result={answer} />
+
+          {!answer && !asking && !askError && (
+            <p className="pb-4 text-center text-sm text-gray-400">
+              Your answer, the executed code, and its cost will appear here.
+            </p>
+          )}
         </div>
-      )}
-
-      {result && (
-        <div className="mt-6 rounded-lg border border-gray-200 bg-white p-4 text-sm whitespace-pre-wrap shadow-sm">
-          {result}
-        </div>
-      )}
-
-      {!result && !error && !loading && (
-        <p className="mt-10 text-center text-sm text-gray-400">Results will appear here.</p>
-      )}
-    </main>
+      </main>
+    </div>
   )
 }

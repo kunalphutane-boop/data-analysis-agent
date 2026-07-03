@@ -31,5 +31,19 @@ class LLMClient:
     def __init__(self) -> None:
         self._provider = _make_provider()
 
+    @property
+    def model(self) -> str:
+        return getattr(self._provider, "model", "")
+
     def call_model(self, prompt: str, *, system: str | None = None) -> str:
         return self._provider.call_model(prompt, system=system)
+
+    def call_with_usage(
+        self, prompt: str, *, system: str | None = None
+    ) -> tuple[str, int, int]:
+        """Return (text, input_tokens, output_tokens). Providers without usage
+        reporting surface (text, 0, 0)."""
+        fn = getattr(self._provider, "call_with_usage", None)
+        if fn is not None:
+            return fn(prompt, system=system)
+        return self._provider.call_model(prompt, system=system), 0, 0

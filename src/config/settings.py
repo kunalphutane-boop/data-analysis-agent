@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     anthropic_api_key: str = Field(default="")
     gemini_api_key: str = Field(default="")
 
+    # Analysis / agent tuning
+    sample_rows: int = Field(default=5)              # rows of the dataset sent to the LLM
+    sandbox_timeout_seconds: int = Field(default=15) # wall-clock limit for generated code
+    max_retries: int = Field(default=3)              # bounded error-fix retries
+
 
 _settings: Settings | None = None
 

@@ -102,7 +102,7 @@ The LLM sees **only** metadata, never the raw dataset:
 
 - **Language:** Python 3.11+ (backend), TypeScript (frontend).
 - **Agent framework:** LangGraph — multi-step pipeline with conditional edges (bounded retry, clarify branch). See [`agent.md`](agent.md).
-- **LLM provider + model:** Google Gemini via `src/llm/providers/gemini.py`. Default model **`gemini-2.0-flash`** (cheap, low-latency; overridable via `AGENT_LLM_MODEL`). API key `AGENT_GEMINI_API_KEY`. Provider auto-detected from whichever key is set (`src/llm/client.py`).
+- **LLM provider + model:** Google Gemini via `src/llm/providers/gemini.py`. Default model **`gemini-2.5-flash`** (cheap, low-latency; overridable via `AGENT_LLM_MODEL`). API key `AGENT_GEMINI_API_KEY`. Provider auto-detected from whichever key is set (`src/llm/client.py`).
 - **Backend:** FastAPI + uvicorn (`localhost:8001`).
 - **Database + ORM:** SQLite + SQLAlchemy 2.0 (Mapped style), Alembic migrations. `AGENT_DATABASE_URL` (default `sqlite:///./data/agent.db`).
 - **Frontend:** Next.js 15 + React 19, static export served by FastAPI at `/app/`.

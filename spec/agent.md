@@ -21,11 +21,11 @@ The LangGraph analysis loop. Stack + sandbox design in [`architecture.md`](archi
 
 | Agent / Node | Provider | Model ID | Rationale |
 |-------------|----------|----------|-----------|
-| `plan` | Gemini | `gemini-2.0-flash` | Cheap, fast planning + ambiguity check |
-| `generate_code` | Gemini | `gemini-2.0-flash` | Code gen from schema + sample; retries stay cheap |
-| `answer` | Gemini | `gemini-2.0-flash` | Plain-language write-up of the real `result` |
+| `plan` | Gemini | `gemini-2.5-flash` | Cheap, fast planning + ambiguity check |
+| `generate_code` | Gemini | `gemini-2.5-flash` | Code gen from schema + sample; retries stay cheap |
+| `answer` | Gemini | `gemini-2.5-flash` | Plain-language write-up of the real `result` |
 
-Model is env-configurable via `AGENT_LLM_MODEL` (default `gemini-2.0-flash`); a stronger model can be set without code change. `execute_code`, `inspect`, `load_context`, `finalize` make **no** LLM call.
+Model is env-configurable via `AGENT_LLM_MODEL` (default `gemini-2.5-flash`); a stronger model can be set without code change. `execute_code`, `inspect`, `load_context`, `finalize` make **no** LLM call.
 
 **Fallback behaviour:** provider-level retry/backoff on transient Gemini errors; on persistent failure the run finalizes with `error` set and a clear message surfaced via `/ask`. No offline/stub path — tests call real Gemini with `AGENT_GEMINI_API_KEY` from `.env`.
 
