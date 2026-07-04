@@ -12,6 +12,11 @@ function isNum(v: TableCell): v is number {
   return typeof v === 'number' && Number.isFinite(v)
 }
 
+// Undo markdown escaping the model sometimes applies to plain text (e.g. "\$1,500").
+function plain(text: string): string {
+  return text.replace(/\\([$_*#`~])/g, '$1')
+}
+
 function fmtCell(v: TableCell): string {
   if (v === null || v === undefined) return '—'
   if (typeof v === 'number') return v.toLocaleString(undefined, { maximumFractionDigits: 4 })
@@ -193,7 +198,7 @@ export function AnswerDisplay({
           data-testid="answer-text"
           className="whitespace-pre-wrap text-sm leading-relaxed text-gray-800"
         >
-          {result.answer}
+          {plain(result.answer)}
         </div>
       )}
 
@@ -209,7 +214,7 @@ export function AnswerDisplay({
               Key insight
             </div>
             <p className="text-sm font-medium leading-relaxed text-indigo-900">
-              {result.key_insight}
+              {plain(result.key_insight)}
             </p>
           </div>
         </div>

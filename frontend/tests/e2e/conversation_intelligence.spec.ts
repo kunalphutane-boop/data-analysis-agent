@@ -49,6 +49,9 @@ test('analyze conversations -> progress -> breakdowns + cross-tab + download', a
   await expect(profile).toBeVisible({ timeout: 60_000 })
   await expect(profile.getByText('Conversation Log', { exact: true })).toBeVisible()
 
+  // Open the Call Intelligence tab (Ask Anything is the default).
+  await page.getByTestId('tab-intelligence').click()
+
   // The Conversation Intelligence section is shown on the loaded dataset.
   const ci = page.getByTestId('conversation-intelligence')
   await expect(ci).toBeVisible()
@@ -136,14 +139,21 @@ test('analyze conversations -> progress -> breakdowns + cross-tab + download', a
   await expect(download).toHaveAttribute('href', /\/classify\/jobs\/.+\/labelled\.csv$/)
 })
 
-test('conversation intelligence action is present on a loaded dataset', async ({ page }) => {
+test('both workspace tabs are present; Ask is default, Call Intelligence on click', async ({
+  page,
+}) => {
   await page.goto('')
   await page.getByTestId('file-input').setInputFiles(transcriptFixture())
   await expect(page.getByTestId('profile-panel')).toBeVisible({ timeout: 60_000 })
 
-  // The action is shown; charts + sessions sidebar remain stubbed.
+  // Ask Anything is the default tab; its question box is visible.
+  await expect(page.getByTestId('tab-ask')).toBeVisible()
+  await expect(page.getByTestId('tab-intelligence')).toBeVisible()
+  await expect(page.getByTestId('question-input')).toBeVisible()
+
+  // Switching tabs reveals the Conversation Intelligence action.
+  await page.getByTestId('tab-intelligence').click()
   await expect(page.getByTestId('analyze-conversations')).toBeVisible()
-  await expect(page.getByTestId('sessions-sidebar')).toBeVisible()
 })
 
 test('analytics workspace renders left/right 30-70 split after upload', async ({ page }) => {

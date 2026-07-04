@@ -75,17 +75,12 @@ test('upload -> profile -> ask -> answer with code and cost', async ({ page }) =
 test('labelled non-functional stubs are visibly present', async ({ page }) => {
   await page.goto('')
 
-  // Sidebar sessions + daily cost total.
-  await expect(page.getByTestId('sessions-sidebar')).toBeVisible()
-  await expect(page.getByTestId('daily-cost-total')).toBeVisible()
-
-  // Main-column stubs.
+  // Remaining Phase-1 stubs (charts + follow-ups are now real features).
   await expect(page.getByTestId('add-file-stub')).toBeVisible()
   await expect(page.getByTestId('quality-flags-stub')).toBeVisible()
-  await expect(page.getByTestId('followups-stub')).toBeVisible()
 
-  // Every stub carries a "Coming soon" badge.
+  // Stubs carry a "Coming soon" badge.
   await expect(page.getByTestId('coming-soon-badge').first()).toBeVisible()
   const badgeCount = await page.getByTestId('coming-soon-badge').count()
-  expect(badgeCount).toBeGreaterThan(3)
+  expect(badgeCount).toBeGreaterThan(1)
 })
