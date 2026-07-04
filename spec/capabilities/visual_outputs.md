@@ -26,7 +26,7 @@ Renders each `/ask` answer with a **summary table** of the executed pandas resul
 ## Business Rules
 - The graph's `enrich` node (P1 no-op) activates to serialize `execution_result` into a capped, JSON-safe `table` (DataFrame → columns+rows incl. a non-default index; Series/dict → key/value; list-of-dicts → union columns; scalar → single cell). No Gemini call.
 - **Best-effort:** table-building never raises out — a non-tabular result or an execution error simply yields `table: null`, and the plain answer is unchanged.
-- The frontend renders the table always (when present) and **auto-picks a bar chart** only when the table has a distinct label column + a numeric value column and ≤ 30 rows (bars sorted by value, capped at 15); otherwise it shows the table alone. Reuses the shared dependency-free chart primitives (no Recharts).
+- The frontend renders the table always (when present) and **auto-picks a chart** when the table has a distinct label column + a numeric value column: a **line** chart when the labels read as an ordered/time axis (dates or an increasing sequence, keeping natural order), otherwise a **bar** chart (≤ 30 categories, sorted by value, capped at 15). Reuses the shared dependency-free chart primitives (no Recharts).
 
 ## Error Cases
 - Non-tabular / non-chartable result → `table` may still render (e.g. a scalar) but no chart; a truly unusable result → `table: null`, answer only.

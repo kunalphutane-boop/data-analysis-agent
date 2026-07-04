@@ -5,6 +5,7 @@ import {
   ApiError,
   ask,
   createSession,
+  getSuggestions,
   uploadDataset,
   type AskResult,
   type Dataset,
@@ -30,10 +31,12 @@ export default function Home() {
   const [asking, setAsking] = useState(false)
   const [askError, setAskError] = useState<string | null>(null)
   const [answer, setAnswer] = useState<AskResult | null>(null)
+  const [suggestions, setSuggestions] = useState<string[]>([])
 
   async function handleFile(file: File) {
     setUploading(true)
     setUploadError(null)
+    setSuggestions([])
     try {
       // Create a session first if we don't have one yet.
       let sid = sessionId
@@ -47,6 +50,11 @@ export default function Home() {
       // A new dataset invalidates the previous answer.
       setAnswer(null)
       setAskError(null)
+      setQuestion('')
+      // Fetch starter questions in the background — never blocks the UI.
+      getSuggestions(ds.id)
+        .then(setSuggestions)
+        .catch(() => setSuggestions([]))
     } catch (err) {
       const msg =
         err instanceof ApiError
@@ -58,13 +66,16 @@ export default function Home() {
     }
   }
 
-  async function handleAsk() {
-    if (!sessionId || !dataset || !question.trim()) return
+  // Ask a specific question (used by the box, suggestion chips, and follow-ups).
+  async function runAsk(q: string) {
+    const text = q.trim()
+    if (!sessionId || !dataset || !text || asking) return
+    setQuestion(text)
     setAsking(true)
     setAskError(null)
     setAnswer(null)
     try {
-      const result = await ask(sessionId, dataset.id, question.trim())
+      const result = await ask(sessionId, dataset.id, text)
       setAnswer(result)
     } catch (err) {
       const msg =
@@ -75,6 +86,10 @@ export default function Home() {
     } finally {
       setAsking(false)
     }
+  }
+
+  function handleAsk() {
+    void runAsk(question)
   }
 
   return (
@@ -135,6 +150,8 @@ export default function Home() {
               onAsk={handleAsk}
               loading={asking}
               disabled={!dataset}
+              suggestions={suggestions}
+              onPickSuggestion={runAsk}
             />
 
             {askError && (
@@ -146,7 +163,7 @@ export default function Home() {
               </div>
             )}
 
-            <AnswerDisplay result={answer} />
+            <AnswerDisplay result={answer} onFollowUp={runAsk} />
 
             {!answer && !asking && !askError && (
               <p className="pb-4 text-center text-sm text-gray-400">

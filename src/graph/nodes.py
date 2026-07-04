@@ -98,6 +98,25 @@ def _parse_plan_json(text: str) -> dict:
     return data
 
 
+def _parse_answer_json(text: str) -> tuple[str, str, list[str]]:
+    """Parse the answer node's JSON into (answer, key_insight, follow_ups).
+
+    Robust: if the model returns plain prose (or malformed JSON), treat the whole
+    text as the answer with no insight/follow-ups — the core answer never breaks.
+    """
+    try:
+        data = _parse_plan_json(text)
+        if not isinstance(data, dict) or "answer" not in data:
+            raise ValueError("no answer field")
+        answer = str(data.get("answer", "")).strip()
+        key_insight = str(data.get("key_insight", "") or "").strip()
+        raw_follow = data.get("follow_ups", []) or []
+        follow_ups = [str(f).strip() for f in raw_follow if str(f).strip()][:3]
+        return answer or text.strip(), key_insight, follow_ups
+    except Exception:
+        return text.strip(), "", []
+
+
 def _accumulate(state: AgentState, it: int, ot: int) -> dict:
     return {
         "input_tokens": state.get("input_tokens", 0) + it,
@@ -255,12 +274,15 @@ def answer(state: AgentState) -> AgentState:
                 f"Captured stdout:\n{state.get('execution_stdout', '')}"
             )
         text, it, ot = LLMClient().call_with_usage(user, system=_prompt("answer"))
+        answer_text, key_insight, follow_ups = _parse_answer_json(text)
         _log.info(
             "answer", run_id=state.get("run_id"),
             latency_ms=int((time.time() - started) * 1000), input_tokens=it, output_tokens=ot,
         )
         result: dict[str, Any] = {
-            "answer": text.strip(),
+            "answer": answer_text,
+            "key_insight": key_insight,
+            "follow_ups": follow_ups,
             "steps": _set_step(state, *_STEP_ANSWER, "done"),
             **_accumulate(state, it, ot),
         }

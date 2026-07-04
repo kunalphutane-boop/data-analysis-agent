@@ -55,6 +55,8 @@ export interface ResultTable {
 export interface AskResult {
   message_id: string
   answer: string
+  key_insight: string
+  follow_ups: string[]
   generated_code: string
   steps: AskStep[]
   input_tokens: number
@@ -158,6 +160,13 @@ export async function ask(
     body: JSON.stringify({ session_id: sessionId, dataset_id: datasetId, question }),
   })
   return unwrap<AskResult>(res)
+}
+
+// Starter-question suggestions for a loaded dataset (GET /datasets/{id}/suggestions).
+export async function getSuggestions(datasetId: string): Promise<string[]> {
+  const res = await fetch(`/datasets/${datasetId}/suggestions`)
+  const data = await unwrap<{ suggestions: string[] }>(res)
+  return data.suggestions ?? []
 }
 
 // ---------------------------------------------------------------------------

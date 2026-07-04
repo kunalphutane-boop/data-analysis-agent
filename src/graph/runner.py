@@ -52,6 +52,8 @@ def run_ask(session_id: str, dataset_id: str, question: str) -> dict:
     final = agentic_ai.invoke(initial)
 
     answer_text = final.get("answer")
+    key_insight = final.get("key_insight") or ""
+    follow_ups = final.get("follow_ups") or []
     generated_code = final.get("generated_code") or None
     steps = final.get("steps", [])
     input_tokens = final.get("input_tokens", 0)
@@ -83,6 +85,8 @@ def run_ask(session_id: str, dataset_id: str, question: str) -> dict:
     return {
         "message_id": run_id,
         "answer": answer_text,
+        "key_insight": key_insight if not needs_clarification else "",
+        "follow_ups": follow_ups if not needs_clarification else [],
         "generated_code": generated_code if not needs_clarification else "",
         "steps": steps,
         "input_tokens": input_tokens,

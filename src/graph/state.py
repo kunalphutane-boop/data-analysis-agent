@@ -32,6 +32,8 @@ class AgentState(TypedDict, total=False):
 
     # Output
     answer: str
+    key_insight: str                # one sharp takeaway grounded in the real numbers
+    follow_ups: list                # up to 3 suggested next questions
     steps: list                     # [{step, label, status}]
     error: str | None
     table: dict | None              # structured result table {columns, rows, row_count, truncated}

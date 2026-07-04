@@ -149,3 +149,62 @@ export function StackedBarChart({
     </div>
   )
 }
+
+// A responsive SVG line chart for ordered/time-series data (x is a sequence, y is
+// a magnitude). Recessive baseline, 2px line, ≥8px dots, min/max y ticks.
+export function LineChart({ data, testId }: { data: BarDatum[]; testId?: string }) {
+  if (data.length < 2) return null
+  const W = 720
+  const H = 200
+  const padL = 8
+  const padR = 8
+  const padT = 12
+  const padB = 26
+  const values = data.map((d) => d.value)
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  const span = max - min || 1
+  const innerW = W - padL - padR
+  const innerH = H - padT - padB
+  const x = (i: number) => padL + (data.length === 1 ? innerW / 2 : (i / (data.length - 1)) * innerW)
+  const y = (v: number) => padT + innerH - ((v - min) / span) * innerH
+  const pts = data.map((d, i) => `${x(i)},${y(d.value)}`).join(' ')
+  // Label a subset of x ticks to avoid collisions.
+  const step = Math.max(1, Math.ceil(data.length / 6))
+  return (
+    <div data-testid={testId} className="overflow-x-auto">
+      <svg viewBox={`0 0 ${W} ${H}`} className="h-48 w-full" role="img">
+        {/* baseline */}
+        <line x1={padL} y1={padT + innerH} x2={W - padR} y2={padT + innerH} stroke="#e1e0d9" strokeWidth={1} />
+        <polyline points={pts} fill="none" stroke={SERIES_BLUE} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+        {data.map((d, i) => (
+          <circle key={i} cx={x(i)} cy={y(d.value)} r={4} fill={SERIES_BLUE}>
+            <title>{`${d.label}: ${fmt(d.value)}`}</title>
+          </circle>
+        ))}
+        {data.map((d, i) =>
+          i % step === 0 || i === data.length - 1 ? (
+            <text key={`t${i}`} x={x(i)} y={H - 8} textAnchor="middle" fontSize={11} fill="#898781">
+              {d.label.length > 10 ? d.label.slice(0, 9) + '…' : d.label}
+            </text>
+          ) : null,
+        )}
+      </svg>
+    </div>
+  )
+}
+
+// Heuristic: does this label sequence read as an ordered axis (dates or an
+// increasing numeric/time sequence) → line chart; otherwise categorical → bar.
+export function looksOrdered(labels: string[]): boolean {
+  if (labels.length < 3) return false
+  const dateLike = labels.every((l) => /^\d{4}([-/]\d{1,2}([-/]\d{1,2})?)?$/.test(l) || !Number.isNaN(Date.parse(l)))
+  if (dateLike) return true
+  const nums = labels.map((l) => Number(l))
+  if (nums.every((n) => !Number.isNaN(n))) {
+    // monotonic (a real sequence, e.g. hours/months as numbers)
+    const inc = nums.every((n, i) => i === 0 || n >= nums[i - 1])
+    return inc
+  }
+  return false
+}

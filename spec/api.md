@@ -73,6 +73,8 @@ None. Local single-user tool bound to `localhost:8001`. No tokens, no CORS beyon
 {"data": {
   "message_id": "uuid",
   "answer": "Total revenue by region: West 1.2M, East 0.9M, ...",
+  "key_insight": "West drives 44% of revenue — more than East and North combined.",
+  "follow_ups": ["How does West's revenue trend over time?", "Which product leads in West?"],
   "generated_code": "result = df.groupby('region')['revenue'].sum()",
   "steps": [
     {"step": 1, "label": "Plan", "status": "done"},
@@ -93,10 +95,17 @@ None. Local single-user tool bound to `localhost:8001`. No tokens, no CORS beyon
 ```
 When the question is ambiguous, the graph returns `needs_clarification: true` and `clarify_question: "Which revenue column — gross or net?"` with `answer` set to that clarifying question and empty `generated_code`. When execution fails after all retries, `error` holds a plain-language failure and `answer` explains it.
 
-`table` is a **best-effort, no-LLM** structured serialization of the executed pandas `result` (P2 visual outputs), produced by the graph's `enrich` node: `columns` (strings), `rows` (each a list of JSON-safe cells — string | number | boolean | null; NaN → null), `row_count` (rows in the full result), and `truncated` (true when rows/cols were capped — 50 rows × 20 cols). It is `null` when the result isn't tabular-ish, when execution errored, or on clarify. The UI renders it as a summary table and, when the shape suits (a distinct label column + a numeric value column, ≤ 30 rows), auto-picks a bar chart — chart-building never blocks the answer.
+`table` is a **best-effort, no-LLM** structured serialization of the executed pandas `result` (P2 visual outputs), produced by the graph's `enrich` node: `columns` (strings), `rows` (each a list of JSON-safe cells — string | number | boolean | null; NaN → null), `row_count` (rows in the full result), and `truncated` (true when rows/cols were capped — 50 rows × 20 cols). It is `null` when the result isn't tabular-ish, when execution errored, or on clarify. The UI renders it as a summary table and, when the shape suits, auto-picks a chart — a **line** chart when the label column reads as an ordered/time axis, otherwise a **bar** chart (distinct label + numeric value column). Chart-building never blocks the answer.
+
+`key_insight` and `follow_ups` come from the same single `answer` Gemini call (the answer prompt returns one JSON object `{answer, key_insight, follow_ups}` — no extra round-trip). `key_insight` is one sharp, number-grounded takeaway (`""` on clarify/error or if the model omits it); `follow_ups` is up to 3 suggested next questions (`[]` on clarify/error). If the model returns plain prose instead of JSON, the whole text becomes `answer` with `key_insight=""` and `follow_ups=[]` — the core answer never breaks.
 **Errors:** 400 `bad_request` (missing fields), 404 `not_found` (unknown session/dataset), 500.
 
-These field names (`answer`, `generated_code`, `steps`, `input_tokens`, `output_tokens`, `cost_usd`, `needs_clarification`, `clarify_question`, `table`) are exactly what the graph in [`agent.md`](agent.md) produces and what the UI in [`ui.md`](ui.md) renders.
+These field names (`answer`, `key_insight`, `follow_ups`, `generated_code`, `steps`, `input_tokens`, `output_tokens`, `cost_usd`, `needs_clarification`, `clarify_question`, `table`) are exactly what the graph in [`agent.md`](agent.md) produces and what the UI in [`ui.md`](ui.md) renders.
+
+### `GET /datasets/{dataset_id}/suggestions`
+**Purpose:** starter questions for a freshly-loaded dataset, shown as clickable chips that ask on click.
+**Response (200):** `{"data": {"suggestions": ["Which region has the highest revenue?", "How many rows per status?", ...]}, "error": null}`
+Best-effort: one cheap LLM call over the schema + a compact sample produces 4-5 dataset-tailored questions; on any LLM/parse failure it falls back to deterministic, column-driven heuristics, so the list is never empty. **Errors:** 404 `not_found`.
 
 ---
 

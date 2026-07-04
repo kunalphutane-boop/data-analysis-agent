@@ -5,7 +5,7 @@
 'use client'
 
 import { formatCost, type AskResult, type ResultTable, type TableCell } from '@/lib/api'
-import { BarChart, type BarDatum } from './charts'
+import { BarChart, LineChart, looksOrdered, type BarDatum } from './charts'
 import { StubButton } from './Stub'
 
 function isNum(v: TableCell): v is number {
@@ -19,12 +19,12 @@ function fmtCell(v: TableCell): string {
   return v
 }
 
-// Auto-pick a bar chart from a result table: needs a numeric value column, a
-// distinct label column, and a sane number of rows. Returns null when the table
-// isn't chartable (the table alone is then shown).
-function pickChart(table: ResultTable): BarDatum[] | null {
+// Auto-pick a chart from a result table: needs a numeric value column, a distinct
+// label column, and a sane number of rows. `kind` is 'line' when the labels read as
+// an ordered/time axis, else 'bar'. Returns null when the table isn't chartable.
+function pickChart(table: ResultTable): { data: BarDatum[]; kind: 'bar' | 'line' } | null {
   const { columns, rows } = table
-  if (rows.length < 1 || rows.length > 30 || columns.length < 2) return null
+  if (rows.length < 1 || rows.length > 60 || columns.length < 2) return null
   let valueIdx = -1
   for (let c = columns.length - 1; c >= 0; c--) {
     if (rows.every((r) => isNum(r[c]))) {
@@ -38,7 +38,12 @@ function pickChart(table: ResultTable): BarDatum[] | null {
   if (labelIdx === -1) return null
   const data = rows.map((r) => ({ label: fmtCell(r[labelIdx]), value: Number(r[valueIdx]) }))
   if (new Set(data.map((d) => d.label)).size !== data.length) return null // categories must be distinct
-  return [...data].sort((a, b) => b.value - a.value).slice(0, 15)
+  // Ordered labels (dates / increasing sequence) → line, keeping natural order.
+  if (looksOrdered(data.map((d) => d.label))) {
+    return { data, kind: 'line' }
+  }
+  if (data.length > 30) return null // too many categories for a readable bar chart
+  return { data: [...data].sort((a, b) => b.value - a.value).slice(0, 15), kind: 'bar' }
 }
 
 function ResultView({ table }: { table: ResultTable }) {
@@ -50,7 +55,11 @@ function ResultView({ table }: { table: ResultTable }) {
           <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
             Chart
           </h4>
-          <BarChart testId="answer-bar-chart" data={chart} />
+          {chart.kind === 'line' ? (
+            <LineChart testId="answer-line-chart" data={chart.data} />
+          ) : (
+            <BarChart testId="answer-bar-chart" data={chart.data} />
+          )}
         </div>
       )}
       <div data-testid="answer-table">
@@ -142,11 +151,19 @@ function StepList({ steps }: { steps: AskResult['steps'] }) {
   )
 }
 
-export function AnswerDisplay({ result }: { result: AskResult | null }) {
+export function AnswerDisplay({
+  result,
+  onFollowUp,
+}: {
+  result: AskResult | null
+  onFollowUp?: (question: string) => void
+}) {
   if (!result) return null
 
   const clarify = result.needs_clarification
   const failed = !!result.error
+  const showInsight = !clarify && !failed && result.key_insight?.trim().length > 0
+  const followUps = !clarify && !failed ? result.follow_ups ?? [] : []
 
   return (
     <section
@@ -177,6 +194,24 @@ export function AnswerDisplay({ result }: { result: AskResult | null }) {
           className="whitespace-pre-wrap text-sm leading-relaxed text-gray-800"
         >
           {result.answer}
+        </div>
+      )}
+
+      {/* Key insight — the sharpest takeaway, highlighted. */}
+      {showInsight && (
+        <div
+          data-testid="key-insight"
+          className="flex items-start gap-2.5 rounded-lg border border-indigo-100 bg-indigo-50/70 p-3"
+        >
+          <span aria-hidden className="mt-0.5 text-base leading-none">💡</span>
+          <div>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-indigo-500">
+              Key insight
+            </div>
+            <p className="text-sm font-medium leading-relaxed text-indigo-900">
+              {result.key_insight}
+            </p>
+          </div>
         </div>
       )}
 
@@ -217,6 +252,30 @@ export function AnswerDisplay({ result }: { result: AskResult | null }) {
       {/* Real: structured result table + auto-picked chart (P2 visual outputs). */}
       {!clarify && !failed && result.table && result.table.rows.length > 0 && (
         <ResultView table={result.table} />
+      )}
+
+      {/* Follow-up questions — click to ask the next question. */}
+      {followUps.length > 0 && (
+        <div data-testid="follow-ups">
+          <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+            Follow-up questions
+          </h4>
+          <div className="flex flex-wrap gap-2">
+            {followUps.map((q, i) => (
+              <button
+                key={i}
+                type="button"
+                data-testid="follow-up-chip"
+                onClick={() => onFollowUp?.(q)}
+                disabled={!onFollowUp}
+                className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200 bg-white px-3 py-1.5 text-xs font-medium text-indigo-700 transition hover:border-indigo-400 hover:bg-indigo-50 disabled:cursor-default disabled:opacity-60"
+              >
+                <span aria-hidden className="text-indigo-400">↳</span>
+                {q}
+              </button>
+            ))}
+          </div>
+        </div>
       )}
 
       {/* Exports remain stubbed (Phase 3). */}
